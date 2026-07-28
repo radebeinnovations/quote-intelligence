@@ -1,0 +1,28 @@
+{
+  "name": "quote-intelligence",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "scripts/*"
+  ],
+  "scripts": {
+    "dev": "concurrently --shell powershell.exe -n api,web -c yellow,cyan \"npm run dev -w @quote-intelligence/api\" \"npm run dev -w @quote-intelligence/web\"",
+    "dev:api": "npm run dev -w @quote-intelligence/api",
+    "dev:web": "npm run dev -w @quote-intelligence/web",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "ingest": "npm run ingest -w @quote-intelligence/ingest",
+    "ingest:dry-run": "npm run ingest -w @quote-intelligence/ingest -- --dry-run",
+    "catalog:match": "npm run catalog:match -w @quote-intelligence/ingest"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0"
+  }
+}
