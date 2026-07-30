@@ -145,6 +145,11 @@ button { color: inherit; }
 .empty-state span { font-size: 2rem; color: var(--accent); }
 .empty-state h3, .error-state strong { color: var(--text); }
 .error-state { margin: 30px 0; border-color: color-mix(in srgb, var(--red) 40%, var(--line)); }
+.fatal-error {
+  min-height: 100vh; display: grid; place-items: center; padding: 32px;
+}
+.fatal-error .error-state { width: min(620px, 100%); background: var(--panel); }
+.fatal-error .error-state p { line-height: 1.6; }
 
 .back-button { padding: 7px 0; border: 0; color: var(--muted); background: none; cursor: pointer; }
 .back-button:hover { color: var(--accent); }

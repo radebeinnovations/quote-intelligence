@@ -1,5 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import {
+  Component,
+  useEffect,
+  useState,
+  type ErrorInfo,
+  type ReactNode
+} from "react";
 import { api } from "./api";
 import { CatalogBrowser } from "./components/CatalogBrowser";
 import { CatalogDetailView } from "./components/CatalogDetailView";
@@ -26,6 +32,55 @@ function currentRoute(): Route {
 }
 
 export function App() {
+  return (
+    <AppErrorBoundary>
+      <AppContent />
+    </AppErrorBoundary>
+  );
+}
+
+interface AppErrorBoundaryState {
+  error: Error | null;
+}
+
+class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  AppErrorBoundaryState
+> {
+  state: AppErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Quote Intelligence failed to render.", error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="fatal-error" role="alert">
+          <div className="error-state">
+            <p className="eyebrow">Application error</p>
+            <strong>Quote Intelligence could not display this page.</strong>
+            <p>{this.state.error.message || "An unexpected rendering error occurred."}</p>
+            <button
+              className="button primary"
+              onClick={() => window.location.reload()}
+            >
+              Reload application
+            </button>
+          </div>
+        </main>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function AppContent() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [route, setRoute] = useState<Route>(currentRoute);
   const stats = useQuery({ queryKey: ["stats"], queryFn: api.stats });
