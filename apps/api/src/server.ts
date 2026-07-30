@@ -14,7 +14,7 @@ dotenv.config({
 
 export type CatalogApiService = Pick<
   CatalogService,
-  "list" | "detail" | "unmatched" | "reassign" | "stats"
+  "list" | "detail" | "unmatched" | "reassign" | "stats" | "suppliers" | "ingestionAudit"
 >;
 
 interface BuildServerOptions {
@@ -26,13 +26,18 @@ export async function buildServer(options: BuildServerOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true });
   const catalog =
     options.catalog ?? new CatalogService(createServiceDatabaseClient());
-  const configuredOrigins = (process.env.WEB_ORIGIN ?? "http://localhost:5173")
-    .split(",")
+  const configuredOrigins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    ...(process.env.WEB_ORIGIN ?? "").split(",")
+  ]
     .map((origin) => origin.trim())
-    .filter(Boolean);
+    .filter((origin, index, origins) => Boolean(origin) && origins.indexOf(origin) === index);
 
   await app.register(cors, {
-    origin: configuredOrigins.length === 1 ? configuredOrigins[0]! : configuredOrigins
+    origin(origin, callback) {
+      callback(null, !origin || configuredOrigins.includes(origin));
+    }
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -88,6 +93,24 @@ export async function buildServer(options: BuildServerOptions = {}) {
   });
 
   app.get("/api/stats", async () => catalog.stats());
+
+  app.get("/api/suppliers", async (request) => {
+    const query = z
+      .object({
+        from: z.string().date().optional(),
+        to: z.string().date().optional()
+      })
+      .refine(({ from, to }) => !from || !to || from <= to, {
+        message: "The start date must be on or before the end date."
+      })
+      .parse(request.query);
+    return catalog.suppliers({
+      ...(query.from ? { from: query.from } : {}),
+      ...(query.to ? { to: query.to } : {})
+    });
+  });
+
+  app.get("/api/ingestion-runs", async () => catalog.ingestionAudit());
 
   return app;
 }

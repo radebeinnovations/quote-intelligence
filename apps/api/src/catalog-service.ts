@@ -3,13 +3,16 @@ import {
   normalizeCatalogRate,
   type CatalogDetailResponse,
   type CatalogSummary,
+  type DateRangeQuery,
   type FairPriceDetail,
+  type IngestionRunAudit,
   type LinkedLineItem,
   type PaginatedCatalogResponse,
   type PriceHistoryPoint,
   type ReassignLineItemInput,
   type ReassignLineItemResult,
   type StatsResponse,
+  type SupplierAnalytics,
   type UnmatchedLineItemsResponse,
   type SupplierComparison
 } from "@quote-intelligence/domain";
@@ -38,6 +41,40 @@ interface CatalogBasisRow {
 
 interface RecordWithId {
   id: string;
+}
+
+interface SupplierRow {
+  id: string;
+  display_name: string;
+  email: string | null;
+  phone: string | null;
+}
+
+interface QuoteSummaryRow {
+  supplier_id: string;
+  quote_date: string;
+}
+
+interface IngestionDocumentRow {
+  id: string;
+  filename: string;
+  file_type: string;
+  sha256: string;
+  extraction_status: string;
+  extraction_warnings: unknown;
+  created_at: string;
+}
+
+interface IngestionRunRow {
+  id: string;
+  started_at: string;
+  completed_at: string | null;
+  status: string;
+  parser_version: string;
+  matching_version: string;
+  document_count: number;
+  error_count: number;
+  source_documents: IngestionDocumentRow[] | null;
 }
 
 export type ReassignOutcome =
@@ -414,6 +451,124 @@ export class CatalogService {
         to: last.data?.quote_date ?? null
       }
     };
+  }
+
+  async suppliers(range: DateRangeQuery): Promise<SupplierAnalytics[]> {
+    const [supplierResult, quoteResult] = await Promise.all([
+      this.database
+        .from("suppliers")
+        .select("id,display_name,email,phone")
+        .order("display_name"),
+      this.dateFilteredQuery(
+        this.database.from("quotes").select("supplier_id,quote_date"),
+        range,
+        "quote_date"
+      )
+    ]);
+    if (supplierResult.error) throw supplierResult.error;
+    if (quoteResult.error) throw quoteResult.error;
+
+    const suppliers = (supplierResult.data ?? []) as SupplierRow[];
+    const quotes = (quoteResult.data ?? []) as QuoteSummaryRow[];
+    let observationQuery = this.database
+      .from("normalized_price_observations")
+      .select("*")
+      .eq("is_current_revision", true);
+    observationQuery = this.dateFilteredQuery(observationQuery, range, "quote_date");
+    const { data: observationData, error: observationError } = await observationQuery;
+    if (observationError) throw observationError;
+    const observations = (observationData ?? []) as ObservationRow[];
+
+    const marketRates = new Map<string, number>();
+    const catalogIds = [
+      ...new Set(
+        observations
+          .filter(validAnalyticsObservation)
+          .map(({ catalog_item_id }) => catalog_item_id)
+          .filter((id): id is string => id !== null)
+      )
+    ];
+    for (const catalogId of catalogIds) {
+      const rows = observations.filter(({ catalog_item_id }) => catalog_item_id === catalogId);
+      const fairPrice = buildFairPrice(rows).value;
+      if (fairPrice !== null && fairPrice !== 0) marketRates.set(catalogId, fairPrice);
+    }
+
+    return suppliers.map((supplier) => {
+      const supplierQuotes = quotes.filter(({ supplier_id }) => supplier_id === supplier.id);
+      const supplierRows = observations.filter(
+        ({ supplier_id }) => supplier_id === supplier.id
+      );
+      const comparableRates = supplierRows
+        .filter(validAnalyticsObservation)
+        .map((row) => numberOrNull(row.canonical_rate_ex_vat)!)
+        .filter(Number.isFinite);
+      const variances = supplierRows.flatMap((row) => {
+        if (!validAnalyticsObservation(row) || !row.catalog_item_id) return [];
+        const marketRate = marketRates.get(row.catalog_item_id);
+        const rate = numberOrNull(row.canonical_rate_ex_vat);
+        return marketRate && rate !== null ? [(rate / marketRate - 1) * 100] : [];
+      });
+      const dates = supplierQuotes.map(({ quote_date }) => quote_date).sort();
+
+      return {
+        supplierId: supplier.id,
+        supplierName: supplier.display_name,
+        email: supplier.email,
+        phone: supplier.phone,
+        quoteCount: supplierQuotes.length,
+        lineItemCount: supplierRows.length,
+        averageRate: comparableRates.length
+          ? comparableRates.reduce((sum, rate) => sum + rate, 0) / comparableRates.length
+          : null,
+        variancePercent: variances.length
+          ? variances.reduce((sum, variance) => sum + variance, 0) / variances.length
+          : null,
+        firstQuoteDate: dates[0] ?? null,
+        lastQuoteDate: dates.at(-1) ?? null
+      };
+    });
+  }
+
+  async ingestionAudit(): Promise<IngestionRunAudit[]> {
+    const { data, error } = await this.database
+      .from("ingestion_runs")
+      .select(
+        "id,started_at,completed_at,status,parser_version,matching_version,document_count,error_count,source_documents(id,filename,file_type,sha256,extraction_status,extraction_warnings,created_at)"
+      )
+      .order("started_at", { ascending: false })
+      .limit(50);
+    if (error) throw error;
+
+    return ((data ?? []) as IngestionRunRow[]).map((run) => ({
+      id: run.id,
+      startedAt: run.started_at,
+      completedAt: run.completed_at,
+      status: run.status,
+      parserVersion: run.parser_version,
+      matchingVersion: run.matching_version,
+      documentCount: run.document_count,
+      errorCount: run.error_count,
+      documents: (run.source_documents ?? []).map((document) => ({
+        id: document.id,
+        filename: document.filename,
+        fileType: document.file_type,
+        sha256: document.sha256,
+        status: document.extraction_status,
+        warnings: document.extraction_warnings,
+        createdAt: document.created_at
+      }))
+    }));
+  }
+
+  private dateFilteredQuery<T extends {
+    gte(column: string, value: string): T;
+    lte(column: string, value: string): T;
+  }>(query: T, range: DateRangeQuery, column: string): T {
+    let filtered = query;
+    if (range.from) filtered = filtered.gte(column, range.from);
+    if (range.to) filtered = filtered.lte(column, range.to);
+    return filtered;
   }
 
   private async observationsFor(catalogItemIds: string[]): Promise<ObservationRow[]> {

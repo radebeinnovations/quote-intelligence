@@ -1,8 +1,10 @@
 import type {
   CatalogDetailResponse,
+  IngestionRunAudit,
   PaginatedCatalogResponse,
   ReassignLineItemResult,
   StatsResponse,
+  SupplierAnalytics,
   UnmatchedLineItemsResponse
 } from "@quote-intelligence/domain";
 import type { FastifyInstance } from "fastify";
@@ -134,6 +136,9 @@ const reassignResponse: ReassignLineItemResult = {
   canonicalBasis: "person-hour"
 };
 
+const suppliersResponse: SupplierAnalytics[] = [];
+const ingestionAuditResponse: IngestionRunAudit[] = [];
+
 describe("Quote Intelligence API", () => {
   let app: FastifyInstance;
   let service: CatalogApiService;
@@ -144,7 +149,9 @@ describe("Quote Intelligence API", () => {
       detail: vi.fn(async () => detailResponse),
       unmatched: vi.fn(async () => unmatchedResponse),
       reassign: vi.fn(async () => ({ status: "ok" as const, result: reassignResponse })),
-      stats: vi.fn(async () => statsResponse)
+      stats: vi.fn(async () => statsResponse),
+      suppliers: vi.fn(async () => suppliersResponse),
+      ingestionAudit: vi.fn(async () => ingestionAuditResponse)
     };
     app = await buildServer({ catalog: service, logger: false });
   });
@@ -211,6 +218,42 @@ describe("Quote Intelligence API", () => {
     expect(response.json()).toEqual(unmatchedResponse);
     expect(service.unmatched).toHaveBeenCalledOnce();
   });
+
+  it("GET /api/suppliers validates and forwards optional date filters", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/suppliers?from=2026-01-01&to=2026-07-30"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(suppliersResponse);
+    expect(service.suppliers).toHaveBeenCalledWith({
+      from: "2026-01-01",
+      to: "2026-07-30"
+    });
+  });
+
+  it("GET /api/ingestion-runs returns ingestion provenance", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/ingestion-runs" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(ingestionAuditResponse);
+    expect(service.ingestionAudit).toHaveBeenCalledOnce();
+  });
+
+  it.each(["http://localhost:5173", "http://localhost:5174"])(
+    "allows the local frontend origin %s",
+    async (origin) => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/health",
+        headers: { origin }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe(origin);
+    }
+  );
 
   it("rejects malformed reassignment payloads before calling the service", async () => {
     const response = await app.inject({

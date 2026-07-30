@@ -3,19 +3,25 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { CatalogBrowser } from "./components/CatalogBrowser";
 import { CatalogDetailView } from "./components/CatalogDetailView";
+import { IngestionAuditView } from "./components/IngestionAuditView";
 import { StatCard } from "./components/StatCard";
+import { SupplierListView } from "./components/SupplierListView";
 import { UnmatchedItemsView } from "./components/UnmatchedItemsView";
 import { formatDate, formatNumber } from "./format";
 
 type Route =
   | { name: "catalog" }
   | { name: "detail"; catalogId: string }
-  | { name: "review" };
+  | { name: "review" }
+  | { name: "suppliers" }
+  | { name: "audit" };
 
 function currentRoute(): Route {
   const catalogId = window.location.pathname.match(/^\/catalog\/([0-9a-f-]+)$/i)?.[1];
   if (catalogId) return { name: "detail", catalogId };
   if (window.location.pathname === "/review") return { name: "review" };
+  if (window.location.pathname === "/suppliers") return { name: "suppliers" };
+  if (window.location.pathname === "/audit") return { name: "audit" };
   return { name: "catalog" };
 }
 
@@ -40,7 +46,11 @@ export function App() {
         ? `/catalog/${nextRoute.catalogId}`
         : nextRoute.name === "review"
           ? "/review"
-          : "/";
+          : nextRoute.name === "suppliers"
+            ? "/suppliers"
+            : nextRoute.name === "audit"
+              ? "/audit"
+              : "/";
     window.history.pushState({}, "", path);
     setRoute(nextRoute);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -66,10 +76,22 @@ export function App() {
             <span>⌘</span> Catalog
           </button>
           <button
+            className={route.name === "suppliers" ? "active" : ""}
+            onClick={() => navigate({ name: "suppliers" })}
+          >
+            <span>▥</span> Suppliers
+          </button>
+          <button
             className={route.name === "review" ? "active" : ""}
             onClick={() => navigate({ name: "review" })}
           >
             <span>↗</span> Review queue
+          </button>
+          <button
+            className={route.name === "audit" ? "active" : ""}
+            onClick={() => navigate({ name: "audit" })}
+          >
+            <span>▤</span> Ingestion Audit
           </button>
         </nav>
         <div className="sidebar-note">
@@ -105,6 +127,10 @@ export function App() {
             />
           ) : route.name === "review" ? (
             <UnmatchedItemsView />
+          ) : route.name === "suppliers" ? (
+            <SupplierListView />
+          ) : route.name === "audit" ? (
+            <IngestionAuditView />
           ) : (
             <CatalogBrowser
               onSelect={(catalogId) => navigate({ name: "detail", catalogId })}

@@ -1,10 +1,13 @@
 import type {
   CatalogDetailResponse,
+  DateRangeQuery,
+  IngestionRunAudit,
   PaginatedCatalogResponse,
   ReassignLineItemInput,
   ReassignLineItemResult,
   UnmatchedLineItemsResponse,
-  StatsResponse
+  StatsResponse,
+  SupplierAnalytics
 } from "@quote-intelligence/domain";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -35,5 +38,13 @@ export const api = {
     request<ReassignLineItemResult>(
       `/api/line-items/${lineItemId}/reassign`,
       { method: "POST", body: JSON.stringify(input) }
-    )
+    ),
+  suppliers: (range: DateRangeQuery = {}) => {
+    const params = new URLSearchParams();
+    if (range.from) params.set("from", range.from);
+    if (range.to) params.set("to", range.to);
+    const query = params.toString();
+    return request<SupplierAnalytics[]>(`/api/suppliers${query ? `?${query}` : ""}`);
+  },
+  ingestionAudit: () => request<IngestionRunAudit[]>("/api/ingestion-runs")
 };

@@ -8,6 +8,46 @@ export interface StatsResponse {
   dateRange: { from: string | null; to: string | null };
 }
 
+export interface DateRangeQuery {
+  from?: string;
+  to?: string;
+}
+
+export interface SupplierAnalytics {
+  supplierId: string;
+  supplierName: string;
+  email: string | null;
+  phone: string | null;
+  quoteCount: number;
+  lineItemCount: number;
+  averageRate: number | null;
+  variancePercent: number | null;
+  firstQuoteDate: string | null;
+  lastQuoteDate: string | null;
+}
+
+export interface IngestionDocumentAudit {
+  id: string;
+  filename: string;
+  fileType: string;
+  sha256: string;
+  status: string;
+  warnings: unknown;
+  createdAt: string;
+}
+
+export interface IngestionRunAudit {
+  id: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: string;
+  parserVersion: string;
+  matchingVersion: string;
+  documentCount: number;
+  errorCount: number;
+  documents: IngestionDocumentAudit[];
+}
+
 export interface CatalogSummary {
   id: string;
   name: string;
