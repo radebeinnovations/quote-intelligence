@@ -9,7 +9,7 @@
     "scripts/*"
   ],
   "scripts": {
-    "dev": "concurrently --shell powershell.exe -n api,web -c yellow,cyan \"npm run dev -w @quote-intelligence/api\" \"npm run dev -w @quote-intelligence/web\"",
+    "dev": "concurrently -n api,web -c yellow,cyan \"npm run dev -w @quote-intelligence/api\" \"npm run dev -w @quote-intelligence/web\"",
     "dev:api": "npm run dev -w @quote-intelligence/api",
     "dev:web": "npm run dev -w @quote-intelligence/web",
     "build": "npm run build --workspaces --if-present",

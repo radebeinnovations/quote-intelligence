@@ -73,6 +73,27 @@ interface ObservationRow {
 const numberOrNull = (value: number | string | null): number | null =>
   value === null ? null : Number(value);
 
+type CatalogSortKey = "fairPrice" | "supplierCount";
+type SortOrder = "asc" | "desc";
+
+export function sortCatalogSummaries(
+  items: CatalogSummary[],
+  sortBy: CatalogSortKey,
+  sortOrder: SortOrder
+): CatalogSummary[] {
+  return [...items].sort((left, right) => {
+    const leftValue = left[sortBy];
+    const rightValue = right[sortBy];
+
+    if (leftValue === null) return rightValue === null ? left.name.localeCompare(right.name) : 1;
+    if (rightValue === null) return -1;
+
+    const difference = leftValue - rightValue;
+    if (difference !== 0) return sortOrder === "asc" ? difference : -difference;
+    return left.name.localeCompare(right.name);
+  });
+}
+
 function validAnalyticsObservation(row: ObservationRow): boolean {
   return (
     row.is_current_revision &&

@@ -43,7 +43,10 @@ export async function buildServer(options: BuildServerOptions = {}) {
         issues: error.issues
       });
     }
-    return reply.status(500).send({ error: "The request could not be completed." });
+    return reply.status(500).send({
+      error: "The request could not be completed.",
+      message: error instanceof Error ? error.message : String(error)
+    });
   });
 
   app.get("/api/health", async () => ({
