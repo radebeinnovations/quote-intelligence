@@ -11,10 +11,14 @@ export const shortDate = new Intl.DateTimeFormat("en-ZA", {
 });
 
 export function formatDate(value: string): string {
-  return shortDate.format(new Date(`${value}T00:00:00`));
+  const normalized = value.trim();
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
+    ? new Date(`${normalized}T00:00:00`)
+    : new Date(normalized);
+
+  return Number.isNaN(date.getTime()) ? "Date unavailable" : shortDate.format(date);
 }
 
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-ZA").format(value);
 }
-
