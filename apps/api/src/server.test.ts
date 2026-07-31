@@ -11,7 +11,7 @@ import type {
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildServer, type CatalogApiService } from "./server";
-import type { UploadIngestionApi } from "./upload-ingestion-service";
+import { UploadIngestionError, type UploadIngestionApi } from "./upload-ingestion-service";
 
 const catalogItemId = "11111111-1111-4111-8111-111111111111";
 const lineItemId = "22222222-2222-4222-8222-222222222222";
@@ -28,7 +28,8 @@ const catalogPage: PaginatedCatalogResponse = {
       supplierCount: 2,
       minPrice: 95,
       maxPrice: 110,
-      fairPrice: 102.5
+      fairPrice: 102.5,
+      lastUploadedAt: "2026-07-31T09:00:00.000Z"
     }
   ],
   page: 1,
@@ -223,6 +224,52 @@ describe("Quote Intelligence API", () => {
     expect(service.detail).toHaveBeenCalledWith(catalogItemId);
   });
 
+  it("rejects an invalid UUID route parameter with a structured 400 response", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/catalog/not-a-uuid" });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "Bad Request",
+      message: "The request failed validation."
+    });
+    expect(response.json().issues).toHaveLength(1);
+    expect(service.detail).not.toHaveBeenCalled();
+  });
+
+  it("returns a structured 404 when a catalog item does not exist", async () => {
+    vi.mocked(service.detail).mockResolvedValueOnce(null);
+    const response = await app.inject({ method: "GET", url: `/api/catalog/${catalogItemId}` });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: "Not Found", message: "Catalog item not found." });
+  });
+
+  it("rejects malformed JSON with HTTP 400", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/catalog",
+      headers: { "content-type": "application/json" },
+      payload: "{"
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "Bad Request" });
+    expect(service.createCatalogItem).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported JSON endpoint media types with HTTP 415", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/catalog",
+      headers: { "content-type": "text/plain" },
+      payload: "not json"
+    });
+
+    expect(response.statusCode).toBe(415);
+    expect(response.json()).toMatchObject({ error: "Unsupported Media Type" });
+    expect(service.createCatalogItem).not.toHaveBeenCalled();
+  });
+
   it("POST /api/line-items/:id/reassign persists a validated correction", async () => {
     const response = await app.inject({
       method: "POST",
@@ -243,6 +290,21 @@ describe("Quote Intelligence API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(statsResponse);
     expect(service.stats).toHaveBeenCalledOnce();
+  });
+
+  it("formats unexpected database errors without exposing [object Object]", async () => {
+    vi.mocked(service.stats).mockRejectedValueOnce({
+      code: "PGRST000",
+      message: "Database connection failed.",
+      details: "The upstream service was unavailable."
+    });
+    const response = await app.inject({ method: "GET", url: "/api/stats" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: "Internal Server Error",
+      message: "[PGRST000] Database connection failed. The upstream service was unavailable."
+    });
   });
 
   it("GET /api/line-items/unmatched powers the review queue", async () => {
@@ -300,6 +362,8 @@ describe("Quote Intelligence API", () => {
       filename: "quote.pdf",
       fileType: "pdf"
     }));
+    const consumedBuffer = vi.mocked(uploadIngestion.ingest).mock.calls[0]?.[0].contents;
+    expect(consumedBuffer?.every((value) => value === 0)).toBe(true);
   });
 
   it("POST /api/ingest/upload routes an XLSX buffer without a path helper", async () => {
@@ -345,6 +409,64 @@ describe("Quote Intelligence API", () => {
     expect(uploadIngestion.ingest).not.toHaveBeenCalled();
   });
 
+  it("maps extraction failures to 422 and persistence failures to 500", async () => {
+    const boundary = "failed-upload-boundary";
+    const request = () => app.inject({
+      method: "POST" as const,
+      url: "/api/ingest/upload",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload: Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="quote.pdf"\r\n\r\n` +
+        `%PDF-1.7 test\r\n--${boundary}--\r\n`
+      )
+    });
+
+    vi.mocked(uploadIngestion.ingest).mockRejectedValueOnce(
+      new UploadIngestionError("The workbook has no quote lines.", 422)
+    );
+    const parseFailure = await request();
+    expect(parseFailure.statusCode).toBe(422);
+    expect(parseFailure.json()).toMatchObject({
+      error: "Unprocessable Entity",
+      message: "The workbook has no quote lines."
+    });
+
+    vi.mocked(uploadIngestion.ingest).mockRejectedValueOnce({
+      code: "23505",
+      message: "A database constraint rejected the quote."
+    });
+    const databaseFailure = await request();
+    expect(databaseFailure.statusCode).toBe(500);
+    expect(databaseFailure.json().message).toContain("[23505]");
+    expect(databaseFailure.json().message).not.toContain("[object Object]");
+  });
+
+  it("enforces the configured multipart file size limit", async () => {
+    await app.close();
+    app = await buildServer({
+      catalog: service,
+      uploadIngestion,
+      logger: false,
+      uploadLimitBytes: 4
+    });
+    const boundary = "oversize-upload-boundary";
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/ingest/upload",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload: Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="quote.pdf"\r\n\r\n` +
+        `%PDF-more-than-four-bytes\r\n--${boundary}--\r\n`
+      )
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toMatchObject({ error: "Payload Too Large" });
+    expect(uploadIngestion.ingest).not.toHaveBeenCalled();
+  });
+
   it.each(["http://localhost:5173", "http://localhost:5174"])(
     "allows the local frontend origin %s",
     async (origin) => {
@@ -358,6 +480,28 @@ describe("Quote Intelligence API", () => {
       expect(response.headers["access-control-allow-origin"]).toBe(origin);
     }
   );
+
+  it("does not grant CORS access to an unconfigured browser origin", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/health",
+      headers: { origin: "https://untrusted.example" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("returns 404 when deleting an already missing resource", async () => {
+    vi.mocked(service.deleteSupplier).mockResolvedValueOnce({ success: false });
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/suppliers/55555555-5555-4555-8555-555555555555"
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: "Not Found", message: "Supplier not found." });
+  });
 
   it("rejects malformed reassignment payloads before calling the service", async () => {
     const response = await app.inject({

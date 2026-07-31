@@ -1,5 +1,6 @@
 import type { IngestionDocumentAudit } from "@quote-intelligence/domain";
 import { formatDate } from "../format";
+import { useModalAccessibility } from "../use-modal-accessibility";
 
 interface DocumentPreviewModalProps {
   document: IngestionDocumentAudit;
@@ -20,12 +21,15 @@ export function DocumentPreviewModal({
   runId,
   onClose
 }: DocumentPreviewModalProps) {
+  const dialogRef = useModalAccessibility(onClose);
   const warnings = safeWarnings(document.warnings);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <div
         className="modal document-preview-modal"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="doc-preview-title"

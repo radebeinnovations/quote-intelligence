@@ -95,12 +95,14 @@ export function UnmatchedItemsView() {
         <ReassignModal
           lineItem={editing}
           catalogItems={catalogOptions.data?.items ?? []}
+          catalogOptionsError={catalogOptions.isError ? catalogOptions.error.message : undefined}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
             void queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] });
             void queryClient.invalidateQueries({ queryKey: ["catalog"] });
             void queryClient.invalidateQueries({ queryKey: ["stats"] });
+            void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
           }}
         />
       )}

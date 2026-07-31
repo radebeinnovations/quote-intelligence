@@ -26,6 +26,23 @@ interface StoredExtraction {
   extraction_warnings: unknown;
 }
 
+function requireData<T>(data: T | null, operation: string): T {
+  if (data === null) throw new Error(`${operation} returned no database row.`);
+  return data;
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
+    return error.message;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
 export class IngestionRepository {
   private readonly database: SupabaseClient;
 
@@ -44,7 +61,7 @@ export class IngestionRepository {
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
-    return data.id;
+    return requireData(data, "Creating an ingestion run").id;
   }
 
   async finishRun(runId: string, errorCount: number): Promise<void> {
@@ -91,9 +108,25 @@ export class IngestionRepository {
 
   async persistDocument(input: PersistDocumentInput): Promise<void> {
     const sourceDocumentId = await this.upsertSourceDocument(input);
-    const supplierId = await this.upsertSupplier(input.document);
-    const quoteId = await this.upsertQuote(input, sourceDocumentId, supplierId);
-    await this.replaceLineItems(quoteId, input.document);
+    try {
+      const supplierId = await this.upsertSupplier(input.document);
+      const quoteId = await this.upsertQuote(input, sourceDocumentId, supplierId);
+      await this.replaceLineItems(quoteId, input.document);
+      const { error } = await this.database
+        .from("source_documents")
+        .update({ extraction_status: "parsed" })
+        .eq("id", sourceDocumentId);
+      if (error) throw error;
+    } catch (error) {
+      await this.database
+        .from("source_documents")
+        .update({
+          extraction_status: "failed",
+          extraction_warnings: [...input.warnings, describeError(error)]
+        })
+        .eq("id", sourceDocumentId);
+      throw error;
+    }
   }
 
   private async upsertSourceDocument(input: PersistDocumentInput): Promise<string> {
@@ -105,7 +138,7 @@ export class IngestionRepository {
           filename: input.filename,
           file_type: input.fileType,
           sha256: input.sha256,
-          extraction_status: "parsed",
+          extraction_status: "processing",
           raw_extraction: input.document,
           extraction_warnings: input.warnings
         },
@@ -114,7 +147,7 @@ export class IngestionRepository {
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
-    return data.id;
+    return requireData(data, "Upserting a source document").id;
   }
 
   private async upsertSupplier(document: ExtractedDocument): Promise<string> {
@@ -134,14 +167,15 @@ export class IngestionRepository {
             vat_number: supplier.vatNumber,
             email: supplier.email ?? null,
             phone: supplier.phone ?? null,
-            address: supplier.address ?? null
+            address: supplier.address ?? null,
+            active: true
           },
           { onConflict: "vat_number" }
         )
         .select("id")
         .single<RecordWithId>();
       if (error) throw error;
-      return data.id;
+      return requireData(data, "Upserting a supplier").id;
     }
 
     const { data: existing, error: selectError } = await this.database
@@ -150,15 +184,35 @@ export class IngestionRepository {
       .eq("canonical_name", canonicalName)
       .maybeSingle<RecordWithId>();
     if (selectError) throw selectError;
-    if (existing) return existing.id;
+    if (existing) {
+      const { error: updateError } = await this.database
+        .from("suppliers")
+        .update({
+          display_name: supplier.name,
+          email: supplier.email ?? null,
+          phone: supplier.phone ?? null,
+          address: supplier.address ?? null,
+          active: true
+        })
+        .eq("id", existing.id);
+      if (updateError) throw updateError;
+      return existing.id;
+    }
 
     const { data, error } = await this.database
       .from("suppliers")
-      .insert({ canonical_name: canonicalName, display_name: supplier.name })
+      .insert({
+        canonical_name: canonicalName,
+        display_name: supplier.name,
+        email: supplier.email ?? null,
+        phone: supplier.phone ?? null,
+        address: supplier.address ?? null,
+        active: true
+      })
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
-    return data.id;
+    return requireData(data, "Creating a supplier").id;
   }
 
   private async upsertQuote(
@@ -198,7 +252,7 @@ export class IngestionRepository {
     if (error) throw error;
 
     await this.reconcileRevisions(supplierId, baseQuoteNumber);
-    return data.id;
+    return requireData(data, "Upserting a quote").id;
   }
 
   private async reconcileRevisions(supplierId: string, quoteNumber: string): Promise<void> {
@@ -271,6 +325,8 @@ export class IngestionRepository {
           unitRate.amountExVat === null ? [unitRate.reason] : []
       };
     });
+
+    if (!rows.length) return;
 
     const { error } = await this.database.from("quote_line_items").insert(rows);
     if (error) throw error;

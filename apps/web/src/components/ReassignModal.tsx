@@ -1,6 +1,7 @@
 import type { CatalogSummary, LinkedLineItem } from "@quote-intelligence/domain";
 import { useState } from "react";
 import { api } from "../api";
+import { useModalAccessibility } from "../use-modal-accessibility";
 
 interface ReassignModalProps {
   lineItem: Pick<
@@ -8,6 +9,7 @@ interface ReassignModalProps {
     "id" | "description" | "supplierName" | "quoteNumber"
   >;
   catalogItems: CatalogSummary[];
+  catalogOptionsError?: string | undefined;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -15,9 +17,11 @@ interface ReassignModalProps {
 export function ReassignModal({
   lineItem,
   catalogItems,
+  catalogOptionsError,
   onClose,
   onSaved
 }: ReassignModalProps) {
+  const dialogRef = useModalAccessibility(onClose);
   const [mode, setMode] = useState<"existing" | "new">("existing");
   const [targetId, setTargetId] = useState(catalogItems[0]?.id ?? "");
   const [newName, setNewName] = useState("");
@@ -47,6 +51,8 @@ export function ReassignModal({
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <div
         className="modal"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="reassign-title"
@@ -80,15 +86,18 @@ export function ReassignModal({
             </button>
           </div>
           {mode === "existing" ? (
-            <label className="field">
-              <span>Target catalog service</span>
-              <select value={targetId} onChange={(event) => setTargetId(event.target.value)} required>
-                <option value="" disabled>Select a service</option>
-                {catalogItems.map((item) => (
-                  <option key={item.id} value={item.id}>{item.name}</option>
-                ))}
-              </select>
-            </label>
+            <>
+              <label className="field">
+                <span>Target catalog service</span>
+                <select value={targetId} onChange={(event) => setTargetId(event.target.value)} required>
+                  <option value="" disabled>Select a service</option>
+                  {catalogItems.map((item) => (
+                    <option key={item.id} value={item.id}>{item.name}</option>
+                  ))}
+                </select>
+              </label>
+              {catalogOptionsError && <p className="form-error" role="alert">{catalogOptionsError}</p>}
+            </>
           ) : (
             <label className="field">
               <span>New canonical service name</span>

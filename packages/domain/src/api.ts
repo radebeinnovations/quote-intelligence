@@ -93,6 +93,7 @@ export interface CatalogSummary {
   minPrice: number | null;
   maxPrice: number | null;
   fairPrice: number | null;
+  lastUploadedAt: string | null;
 }
 
 export interface PaginatedCatalogResponse {

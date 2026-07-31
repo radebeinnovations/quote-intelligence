@@ -24,7 +24,8 @@ async function upsertCatalog(): Promise<Map<string, string>> {
     description: item.description,
     canonical_unit: item.canonicalUnit,
     canonical_pricing_basis: item.canonicalBasis,
-    attributes: { generatedBy: "catalog-rules-v1" }
+    attributes: { generatedBy: "catalog-rules-v1" },
+    active: true
   }));
   const { data, error } = await database
     .from("catalog_items")
@@ -35,7 +36,8 @@ async function upsertCatalog(): Promise<Map<string, string>> {
 }
 
 function normalizePrice(line: LineRow, match: CatalogRule) {
-  const rate = line.unit_rate_ex_vat === null ? null : Number(line.unit_rate_ex_vat);
+  const parsedRate = line.unit_rate_ex_vat === null ? null : Number(line.unit_rate_ex_vat);
+  const rate = parsedRate !== null && Number.isFinite(parsedRate) ? parsedRate : null;
   return normalizeCatalogRate(rate, line.unit_raw, match.canonicalBasis);
 }
 

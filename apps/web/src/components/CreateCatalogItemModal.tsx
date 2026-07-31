@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
+import { useModalAccessibility } from "../use-modal-accessibility";
 
 interface CreateCatalogItemModalProps {
   onClose: () => void;
@@ -16,6 +17,7 @@ const CATEGORIES = [
 ];
 
 export function CreateCatalogItemModal({ onClose, onSaved }: CreateCatalogItemModalProps) {
+  const dialogRef = useModalAccessibility(onClose);
   const [name, setName] = useState("");
   const [category, setCategory] = useState("Transport");
   const [pricingBasis, setPricingBasis] = useState("per vehicle-km");
@@ -51,6 +53,8 @@ export function CreateCatalogItemModal({ onClose, onSaved }: CreateCatalogItemMo
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <div
         className="modal"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-catalog-title"

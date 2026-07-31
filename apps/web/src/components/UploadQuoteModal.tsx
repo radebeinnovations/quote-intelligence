@@ -1,8 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useRef, useState, type DragEvent } from "react";
 import type { UploadQuoteResponse } from "@quote-intelligence/domain";
 import { api, type QuoteUploadProgress } from "../api";
 import { formatNumber, zar } from "../format";
+import { useModalAccessibility } from "../use-modal-accessibility";
 
 interface UploadQuoteModalProps {
   onClose: () => void;
@@ -16,6 +17,7 @@ function supportedFile(file: File): boolean {
 
 export function UploadQuoteModal({ onClose }: UploadQuoteModalProps) {
   const queryClient = useQueryClient();
+  const dialogRef = useModalAccessibility(onClose);
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<UploadStatus>("idle");
   const [progress, setProgress] = useState<QuoteUploadProgress>({
@@ -27,14 +29,6 @@ export function UploadQuoteModal({ onClose }: UploadQuoteModalProps) {
   const [error, setError] = useState("");
   const [result, setResult] = useState<UploadQuoteResponse | null>(null);
   const busy = status === "uploading" || status === "parsing";
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, onClose]);
 
   async function beginUpload(file: File) {
     if (!supportedFile(file)) {
@@ -59,7 +53,7 @@ export function UploadQuoteModal({ onClose }: UploadQuoteModalProps) {
         queryClient.invalidateQueries({ queryKey: ["suppliers"] }),
         queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] }),
         queryClient.invalidateQueries({ queryKey: ["ingestion-audit"] })
-      ]);
+      ]).catch(() => undefined);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Quote upload failed.");
       setStatus("error");
@@ -91,10 +85,12 @@ export function UploadQuoteModal({ onClose }: UploadQuoteModalProps) {
     <div
       className="modal-backdrop"
       role="presentation"
-      onMouseDown={() => { if (!busy) onClose(); }}
+      onMouseDown={onClose}
     >
       <div
         className="modal upload-modal"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="upload-quote-title"
@@ -104,7 +100,6 @@ export function UploadQuoteModal({ onClose }: UploadQuoteModalProps) {
           className="icon-button modal-close"
           onClick={onClose}
           aria-label="Close upload"
-          disabled={busy}
         >
           ×
         </button>

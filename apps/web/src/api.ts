@@ -39,6 +39,7 @@ function uploadQuote(
     };
     xhr.upload.onload = () => onProgress({ phase: "parsing", percent: null });
     xhr.onerror = () => reject(new Error("The quote upload could not reach the API."));
+    xhr.onabort = () => reject(new Error("The quote upload was cancelled."));
     xhr.ontimeout = () => reject(new Error("Document parsing timed out. Please try again."));
     xhr.onload = () => {
       const payload = (() => {
@@ -65,12 +66,13 @@ function uploadQuote(
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(path, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers
-    }
+    headers
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;

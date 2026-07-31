@@ -107,10 +107,26 @@ interface ObservationRow {
   explanation: string | null;
   arithmetic_valid: boolean;
   validation_status: "valid" | "warning" | "invalid";
+  source_created_at: string;
 }
 
-const numberOrNull = (value: number | string | null): number | null =>
-  value === null ? null : Number(value);
+const numberOrNull = (value: number | string | null): number | null => {
+  if (value === null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+function requireData<T>(data: T | null, operation: string): T {
+  if (data === null) throw new Error(`${operation} returned no database row.`);
+  return data;
+}
+
+function canonicalSupplierName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\b\(pty\)|\bltd\b|\bcc\b|[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
 
 type CatalogSortKey = "fairPrice" | "supplierCount";
 type SortOrder = "asc" | "desc";
@@ -143,7 +159,9 @@ function validAnalyticsObservation(row: ObservationRow): boolean {
 }
 
 function latestDate(rows: ObservationRow[]): Date {
-  const timestamps = rows.map(({ quote_date }) => Date.parse(quote_date));
+  const timestamps = rows
+    .map(({ quote_date }) => Date.parse(quote_date))
+    .filter(Number.isFinite);
   return new Date(Math.max(...timestamps, Date.now()));
 }
 
@@ -259,6 +277,7 @@ export class CatalogService {
         "id,name,description,category,canonical_unit,canonical_pricing_basis,attributes"
       )
       .eq("id", id)
+      .eq("active", true)
       .maybeSingle();
     if (error) throw error;
     if (!data) return null;
@@ -337,10 +356,11 @@ export class CatalogService {
         .select("id")
         .single<RecordWithId>();
       if (error) throw error;
-      targetCatalogItemId = newItem.id;
+      const createdItem = requireData(newItem, "Creating a catalog item for reassignment");
+      targetCatalogItemId = createdItem.id;
       targetBasis = lineItem.unit_raw;
       created = true;
-      createdCatalogItemId = newItem.id;
+      createdCatalogItemId = createdItem.id;
     } else {
       const { data: target, error } = await this.database
         .from("catalog_items")
@@ -378,6 +398,7 @@ export class CatalogService {
       .select("id")
       .single<RecordWithId>();
     if (overrideError) throw overrideError;
+    const storedOverride = requireData(override, "Creating a catalog override");
 
     const { error: normalizationError } = await this.database
       .from("price_normalizations")
@@ -394,7 +415,7 @@ export class CatalogService {
         { onConflict: "line_item_id" }
       );
     if (normalizationError) {
-      await this.database.from("catalog_match_overrides").delete().eq("id", override.id);
+      await this.database.from("catalog_match_overrides").delete().eq("id", storedOverride.id);
       if (createdCatalogItemId) {
         await this.database.from("catalog_items").delete().eq("id", createdCatalogItemId);
       }
@@ -415,10 +436,12 @@ export class CatalogService {
   }
 
   async stats(): Promise<StatsResponse> {
-    const count = async (table: string): Promise<number> => {
-      const { count: value, error } = await this.database
+    const count = async (table: string, activeOnly = false): Promise<number> => {
+      let query = this.database
         .from(table)
         .select("*", { count: "exact", head: true });
+      if (activeOnly) query = query.eq("active", true);
+      const { count: value, error } = await query;
       if (error) throw error;
       return value ?? 0;
     };
@@ -426,8 +449,8 @@ export class CatalogService {
       await Promise.all([
         count("quotes"),
         count("quote_line_items"),
-        count("catalog_items"),
-        count("suppliers"),
+        count("catalog_items", true),
+        count("suppliers", true),
         this.database
           .from("quotes")
           .select("quote_date")
@@ -460,6 +483,7 @@ export class CatalogService {
       this.database
         .from("suppliers")
         .select("id,display_name,email,phone")
+        .eq("active", true)
         .order("display_name"),
       this.dateFilteredQuery(
         this.database.from("quotes").select("supplier_id,quote_date"),
@@ -551,7 +575,7 @@ export class CatalogService {
       matchingVersion: run.matching_version,
       documentCount: run.document_count,
       errorCount: run.error_count,
-      documents: (run.source_documents ?? []).map((document) => ({
+      documents: (Array.isArray(run.source_documents) ? run.source_documents : []).map((document) => ({
         id: document.id,
         filename: document.filename,
         fileType: document.file_type,
@@ -567,14 +591,17 @@ export class CatalogService {
     const { data, error } = await this.database
       .from("suppliers")
       .insert({
+        canonical_name: canonicalSupplierName(input.name),
         display_name: input.name,
         email: input.email || null,
-        phone: input.phone || null
+        phone: input.phone || null,
+        active: true
       })
       .select("id,display_name")
       .single<{ id: string; display_name: string }>();
     if (error) throw error;
-    return { id: data.id, name: data.display_name };
+    const supplier = requireData(data, "Creating a supplier");
+    return { id: supplier.id, name: supplier.display_name };
   }
 
   async createCatalogItem(input: CreateCatalogItemInput): Promise<CatalogSummary> {
@@ -586,30 +613,35 @@ export class CatalogService {
         description: input.description || null,
         canonical_unit: input.pricingBasis || "item",
         canonical_pricing_basis: input.pricingBasis || "item",
-        attributes: {}
+        attributes: {},
+        active: true
       })
       .select("id,name,description,category,canonical_unit,canonical_pricing_basis,attributes")
       .single<CatalogRow>();
     if (error) throw error;
-    return this.summary(data, []);
+    return this.summary(requireData(data, "Creating a catalog item"), []);
   }
 
   async deleteSupplier(id: string): Promise<{ success: boolean }> {
-    const { error } = await this.database
+    const { data, error } = await this.database
       .from("suppliers")
-      .delete()
-      .eq("id", id);
+      .update({ active: false })
+      .eq("id", id)
+      .select("id")
+      .maybeSingle<RecordWithId>();
     if (error) throw error;
-    return { success: true };
+    return { success: data !== null };
   }
 
   async deleteCatalogItem(id: string): Promise<{ success: boolean }> {
-    const { error } = await this.database
+    const { data, error } = await this.database
       .from("catalog_items")
       .update({ active: false })
-      .eq("id", id);
+      .eq("id", id)
+      .select("id")
+      .maybeSingle<RecordWithId>();
     if (error) throw error;
-    return { success: true };
+    return { success: data !== null };
   }
 
   private dateFilteredQuery<T extends {
@@ -646,7 +678,12 @@ export class CatalogService {
       supplierCount: new Set(rows.map(({ supplier_id }) => supplier_id)).size,
       minPrice: rates.length ? Math.min(...rates) : null,
       maxPrice: rates.length ? Math.max(...rates) : null,
-      fairPrice: buildFairPrice(rows).value
+      fairPrice: buildFairPrice(rows).value,
+      lastUploadedAt: rows
+        .map(({ source_created_at }) => source_created_at)
+        .filter(Boolean)
+        .sort()
+        .at(-1) ?? null
     };
   }
 

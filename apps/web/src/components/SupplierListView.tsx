@@ -24,11 +24,15 @@ export function SupplierListView() {
   });
 
   async function handleDeleteSupplier(supplierId: string, supplierName: string) {
-    if (window.confirm(`Are you sure you want to delete vendor "${supplierName}"?`)) {
+    if (window.confirm(
+      `Deactivate vendor "${supplierName}"? Historical quotes remain in the audit trail.`
+    )) {
       try {
         await api.deleteSupplier(supplierId);
         void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
         void queryClient.invalidateQueries({ queryKey: ["stats"] });
+        void queryClient.invalidateQueries({ queryKey: ["catalog"] });
+        void queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] });
       } catch (err) {
         alert(err instanceof Error ? err.message : "Failed to delete supplier.");
       }
@@ -90,25 +94,31 @@ export function SupplierListView() {
                 : `${s.variancePercent.toFixed(1)}% vs Market`;
 
             return (
-              <div
+              <article
                 className="catalog-card supplier-card"
                 key={s.supplierId}
-                onClick={() => setSelectedSupplier(s)}
-                style={{ cursor: "pointer" }}
               >
+                <button
+                  type="button"
+                  className="card-open-button"
+                  aria-label={`View analytics for ${s.supplierName}`}
+                  onClick={() => setSelectedSupplier(s)}
+                />
                 <div className="card-topline">
                   <span className={`variance-tag ${varianceClass}`}>{varianceText}</span>
                   <div className="card-topline-actions">
-                    <span
+                    <button
+                      type="button"
                       className="delete-icon-btn"
-                      title="Delete supplier"
+                      title="Deactivate supplier"
+                      aria-label={`Deactivate ${s.supplierName}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteSupplier(s.supplierId, s.supplierName);
                       }}
                     >
                       🗑
-                    </span>
+                    </button>
                     <span className="arrow">↗</span>
                   </div>
                 </div>
@@ -120,9 +130,9 @@ export function SupplierListView() {
                 </p>
                 <div className="fair-price-row">
                   <span>Average ex-VAT Rate</span>
-                  <strong>{s.averageRate ? zar.format(s.averageRate) : "—"}</strong>
+                  <strong>{s.averageRate !== null ? zar.format(s.averageRate) : "—"}</strong>
                   <small>
-                    Active quotes: {s.firstQuoteDate ? `${formatDate(s.firstQuoteDate)} – ${formatDate(s.lastQuoteDate!)}` : "None"}
+                    Active quotes: {s.firstQuoteDate && s.lastQuoteDate ? `${formatDate(s.firstQuoteDate)} – ${formatDate(s.lastQuoteDate)}` : "None"}
                   </small>
                 </div>
                 <dl className="card-metrics">
@@ -147,7 +157,7 @@ export function SupplierListView() {
                     </dd>
                   </div>
                 </dl>
-              </div>
+              </article>
             );
           })}
         </div>

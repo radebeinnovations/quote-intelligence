@@ -8,11 +8,11 @@ import {
 } from "@quote-intelligence/domain";
 import dotenv from "dotenv";
 import Fastify from "fastify";
-import { copyFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { CatalogService } from "./catalog-service";
+import { describeUnknownError } from "./error-utils";
 import {
   UploadIngestionError,
   UploadIngestionService,
@@ -23,18 +23,6 @@ import {
 dotenv.config({
   path: resolve(fileURLToPath(new URL("../../../", import.meta.url)), ".env")
 });
-
-// Create a copy of a sample quote directly in the root directory for easy user testing
-try {
-  const rootDir = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
-  const sampleSource = resolve(rootDir, "candidate-pack/sample-quotes/Nightjar_Quote_AwardsDinner.xlsx");
-  const sampleTarget = resolve(rootDir, "SAMPLE_QUOTE_TO_TEST.xlsx");
-  if (existsSync(sampleSource)) {
-    copyFileSync(sampleSource, sampleTarget);
-  }
-} catch (e) {
-  // Ignore fallback file creation errors
-}
 
 export type CatalogApiService = Pick<
   CatalogService,
@@ -55,6 +43,31 @@ interface BuildServerOptions {
   catalog?: CatalogApiService;
   uploadIngestion?: UploadIngestionApi;
   logger?: boolean;
+  uploadLimitBytes?: number;
+}
+
+const statusLabels: Record<number, string> = {
+  400: "Bad Request",
+  404: "Not Found",
+  409: "Conflict",
+  413: "Payload Too Large",
+  415: "Unsupported Media Type",
+  422: "Unprocessable Entity",
+  500: "Internal Server Error",
+  503: "Service Unavailable"
+};
+
+function notFound(reply: { status(code: number): { send(body: unknown): unknown } }, message: string) {
+  return reply.status(404).send({ error: "Not Found", message });
+}
+
+function requireJsonContentType(request: {
+  headers: { "content-type"?: string | undefined };
+}): void {
+  const mediaType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+  if (!mediaType || !/^application\/(?:[\w.-]+\+)?json$/.test(mediaType)) {
+    throw new UploadIngestionError("Expected an application/json request body.", 415);
+  }
 }
 
 export async function buildServer(options: BuildServerOptions = {}) {
@@ -79,7 +92,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     limits: {
       files: 1,
       fields: 0,
-      fileSize: 25 * 1024 * 1024
+      fileSize: options.uploadLimitBytes ?? 25 * 1024 * 1024
     }
   });
 
@@ -87,7 +100,8 @@ export async function buildServer(options: BuildServerOptions = {}) {
     app.log.error(error);
     if (error instanceof z.ZodError) {
       return reply.status(400).send({
-        error: "Invalid request",
+        error: "Bad Request",
+        message: "The request failed validation.",
         issues: error.issues
       });
     }
@@ -98,8 +112,8 @@ export async function buildServer(options: BuildServerOptions = {}) {
         ? error.statusCode
         : 500;
     return reply.status(statusCode).send({
-      error: "The request could not be completed.",
-      message: error instanceof Error ? error.message : String(error)
+      error: statusLabels[statusCode] ?? "Request Error",
+      message: describeUnknownError(error)
     });
   });
 
@@ -134,11 +148,16 @@ export async function buildServer(options: BuildServerOptions = {}) {
     }
 
     uploadIngestion ??= new UploadIngestionService();
-    const result = await uploadIngestion.ingest({
-      filename,
-      fileType: extension.slice(1) as UploadFileType,
-      contents
-    });
+    let result;
+    try {
+      result = await uploadIngestion.ingest({
+        filename,
+        fileType: extension.slice(1) as UploadFileType,
+        contents
+      });
+    } finally {
+      contents.fill(0);
+    }
     return reply.status(result.idempotent ? 200 : 201).send(result);
   });
 
@@ -154,6 +173,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
   });
 
   app.post("/api/catalog", async (request, reply) => {
+    requireJsonContentType(request);
     const input = createCatalogItemSchema.parse(request.body);
     const item = await catalog.createCatalogItem(input);
     return reply.status(201).send(item);
@@ -162,26 +182,29 @@ export async function buildServer(options: BuildServerOptions = {}) {
   app.get("/api/catalog/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const detail = await catalog.detail(id);
-    if (!detail) return reply.status(404).send({ error: "Catalog item not found." });
+    if (!detail) return notFound(reply, "Catalog item not found.");
     return detail;
   });
 
-  app.delete("/api/catalog/:id", async (request) => {
+  app.delete("/api/catalog/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    return catalog.deleteCatalogItem(id);
+    const outcome = await catalog.deleteCatalogItem(id);
+    if (!outcome.success) return notFound(reply, "Catalog item not found.");
+    return outcome;
   });
 
   app.get("/api/line-items/unmatched", async () => catalog.unmatched());
 
   app.post("/api/line-items/:id/reassign", async (request, reply) => {
+    requireJsonContentType(request);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const input = reassignLineItemSchema.parse(request.body);
     const outcome = await catalog.reassign(id, input);
     if (outcome.status === "line-item-not-found") {
-      return reply.status(404).send({ error: "Line item not found." });
+      return notFound(reply, "Line item not found.");
     }
     if (outcome.status === "target-not-found") {
-      return reply.status(404).send({ error: "Target catalog item not found." });
+      return notFound(reply, "Target catalog item not found.");
     }
     return reply.status(201).send(outcome.result);
   });
@@ -205,14 +228,17 @@ export async function buildServer(options: BuildServerOptions = {}) {
   });
 
   app.post("/api/suppliers", async (request, reply) => {
+    requireJsonContentType(request);
     const input = createSupplierSchema.parse(request.body);
     const supplier = await catalog.createSupplier(input);
     return reply.status(201).send(supplier);
   });
 
-  app.delete("/api/suppliers/:id", async (request) => {
+  app.delete("/api/suppliers/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    return catalog.deleteSupplier(id);
+    const outcome = await catalog.deleteSupplier(id);
+    if (!outcome.success) return notFound(reply, "Supplier not found.");
+    return outcome;
   });
 
   app.get("/api/ingestion-runs", async () => catalog.ingestionAudit());

@@ -42,6 +42,7 @@ create table public.suppliers (
   email text,
   phone text,
   address text,
+  active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -186,9 +187,11 @@ select
   pn.comparable,
   pn.explanation,
   li.arithmetic_valid,
-  q.validation_status
+  q.validation_status,
+  sd.created_at as source_created_at
 from public.quote_line_items li
 join public.quotes q on q.id = li.quote_id
+join public.source_documents sd on sd.id = q.source_document_id
 join public.suppliers s on s.id = q.supplier_id
 left join public.catalog_matches m on m.line_item_id = li.id
 left join lateral (
@@ -198,7 +201,9 @@ left join lateral (
   order by cmo.created_at desc
   limit 1
 ) o on true
-left join public.price_normalizations pn on pn.line_item_id = li.id;
+left join public.price_normalizations pn on pn.line_item_id = li.id
+left join public.catalog_items ci on ci.id = coalesce(o.catalog_item_id, m.catalog_item_id)
+where s.active and (ci.id is null or ci.active);
 
 create index source_documents_run_idx on public.source_documents (ingestion_run_id);
 create index quotes_supplier_date_idx on public.quotes (supplier_id, quote_date);

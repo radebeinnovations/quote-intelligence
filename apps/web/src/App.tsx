@@ -130,25 +130,25 @@ function AppContent() {
             className={route.name === "catalog" ? "active" : ""}
             onClick={() => navigate({ name: "catalog" })}
           >
-            <span>⌘</span> Catalog
+            <span>⌘</span><span className="nav-label">Catalog</span>
           </button>
           <button
             className={route.name === "suppliers" ? "active" : ""}
             onClick={() => navigate({ name: "suppliers" })}
           >
-            <span>▥</span> Suppliers
+            <span>▥</span><span className="nav-label">Suppliers</span>
           </button>
           <button
             className={route.name === "review" ? "active" : ""}
             onClick={() => navigate({ name: "review" })}
           >
-            <span>↗</span> Review queue
+            <span>↗</span><span className="nav-label">Review queue</span>
           </button>
           <button
             className={route.name === "audit" ? "active" : ""}
             onClick={() => navigate({ name: "audit" })}
           >
-            <span>▤</span> Ingestion Audit
+            <span>▤</span><span className="nav-label">Ingestion Audit</span>
           </button>
         </nav>
         <div className="sidebar-note">
@@ -174,12 +174,20 @@ function AppContent() {
           </div>
         </header>
 
-        <div className="stats-strip">
+        <div className="stats-strip" aria-busy={stats.isLoading}>
           <StatCard label="Quotes" value={stats.data ? formatNumber(stats.data.totalQuotes) : "—"} hint="Current and historical" />
           <StatCard label="Suppliers" value={stats.data ? formatNumber(stats.data.totalSuppliers) : "—"} hint="South African vendors" />
           <StatCard label="Catalog services" value={stats.data ? formatNumber(stats.data.catalogItemCount) : "—"} hint="Canonical matches" />
           <StatCard label="Extracted lines" value={stats.data ? formatNumber(stats.data.totalLineItems) : "—"} hint="Auditable source records" />
         </div>
+        {stats.isError && (
+          <div className="stats-error" role="alert">
+            <span>Live metrics are unavailable: {stats.error.message}</span>
+            <button className="button secondary compact" onClick={() => void stats.refetch()}>
+              Retry
+            </button>
+          </div>
+        )}
 
         <main className="content">
           {route.name === "detail" ? (

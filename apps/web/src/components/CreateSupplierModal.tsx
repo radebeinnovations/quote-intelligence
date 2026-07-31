@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
+import { useModalAccessibility } from "../use-modal-accessibility";
 
 interface CreateSupplierModalProps {
   onClose: () => void;
@@ -7,6 +8,7 @@ interface CreateSupplierModalProps {
 }
 
 export function CreateSupplierModal({ onClose, onSaved }: CreateSupplierModalProps) {
+  const dialogRef = useModalAccessibility(onClose);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -40,6 +42,8 @@ export function CreateSupplierModal({ onClose, onSaved }: CreateSupplierModalPro
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <div
         className="modal"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-supplier-title"

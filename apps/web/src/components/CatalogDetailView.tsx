@@ -177,11 +177,15 @@ export function CatalogDetailView({ id, onBack }: { id: string; onBack: () => vo
         <ReassignModal
           lineItem={editing}
           catalogItems={(catalogOptions.data?.items ?? []).filter(({ id: optionId }) => optionId !== id)}
+          catalogOptionsError={catalogOptions.isError ? catalogOptions.error.message : undefined}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
             void queryClient.invalidateQueries({ queryKey: ["catalog"] });
             void queryClient.invalidateQueries({ queryKey: ["catalog", id] });
+            void queryClient.invalidateQueries({ queryKey: ["stats"] });
+            void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
+            void queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] });
           }}
         />
       )}

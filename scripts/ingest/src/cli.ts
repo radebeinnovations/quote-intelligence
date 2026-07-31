@@ -98,12 +98,17 @@ async function main() {
             : await docuPipe!.parsePdf(file);
         const normalizedDate = parseSouthAfricanDate(document.quote.dateText);
         const warnings = validateExtractedDocument(document).map(({ message }) => message);
-        const taxPreview = normalizeToExVat(
-          document.lineItems[0]!.unitRate,
-          document.quote.taxBasis,
-          document.quote.vatRate
-        );
-        if (taxPreview.amountExVat === null) warnings.push(taxPreview.reason);
+        const firstLine = document.lineItems[0];
+        if (firstLine) {
+          const taxPreview = normalizeToExVat(
+            firstLine.unitRate,
+            document.quote.taxBasis,
+            document.quote.vatRate
+          );
+          if (taxPreview.amountExVat === null) warnings.push(taxPreview.reason);
+        } else {
+          warnings.push("No line items were extracted from this document.");
+        }
         if (repository && ingestionRunId) {
           await repository.persistDocument({
             ingestionRunId,

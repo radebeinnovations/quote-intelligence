@@ -13,6 +13,7 @@ import {
   type UploadedQuoteLineItem
 } from "@quote-intelligence/domain";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { describeUnknownError, isDatabaseError } from "./error-utils";
 import { createHash } from "node:crypto";
 import { DocuPipeBufferClient } from "./docupipe-buffer-client";
 import { parseSouthAfricanDate } from "./quote-date";
@@ -81,6 +82,13 @@ interface MatchRow {
 
 interface CatalogNameRow { id: string; name: string }
 
+function requireData<T>(data: T | null, operation: string): T {
+  if (data === null) {
+    throw new UploadIngestionError(`${operation} returned no database row.`, 500);
+  }
+  return data;
+}
+
 function stringWarnings(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((warning): warning is string => typeof warning === "string")
@@ -106,7 +114,14 @@ export class UploadIngestionService implements UploadIngestionApi {
     const sha256 = createHash("sha256").update(input.contents).digest("hex");
     const existing = await this.findSourceDocument(sha256);
     if (existing?.extraction_status === "parsed") {
-      const document = extractedDocumentSchema.parse(existing.raw_extraction);
+      const parsedDocument = extractedDocumentSchema.safeParse(existing.raw_extraction);
+      if (!parsedDocument.success) {
+        throw new UploadIngestionError(
+          "The stored extraction for this document is invalid and must be reprocessed.",
+          500
+        );
+      }
+      const document = parsedDocument.data;
       return this.loadSummary({
         sourceDocumentId: existing.id,
         filename: existing.filename,
@@ -191,16 +206,23 @@ export class UploadIngestionService implements UploadIngestionApi {
         warnings
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeUnknownError(error);
       if (sourceDocumentId) {
-        await this.database
-          .from("source_documents")
-          .update({ extraction_status: "failed", extraction_warnings: [message] })
-          .eq("id", sourceDocumentId);
+        await Promise.allSettled([
+          this.database.from("quotes").delete().eq("source_document_id", sourceDocumentId),
+          this.database
+            .from("source_documents")
+            .update({ extraction_status: "failed", extraction_warnings: [message] })
+            .eq("id", sourceDocumentId)
+        ]);
       }
       await this.finishRun(ingestionRunId, 1).catch(() => undefined);
       if (error instanceof UploadIngestionError) throw error;
-      throw new UploadIngestionError(`Unable to parse and persist the uploaded quote: ${message}`);
+      const statusCode = isDatabaseError(error) ? 500 : 422;
+      throw new UploadIngestionError(
+        `Unable to parse and persist the uploaded quote: ${message}`,
+        statusCode
+      );
     }
   }
 
@@ -243,7 +265,7 @@ export class UploadIngestionService implements UploadIngestionApi {
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
-    return data.id;
+    return requireData(data, "Creating an ingestion run").id;
   }
 
   private async finishRun(runId: string, errorCount: number): Promise<void> {
@@ -275,7 +297,7 @@ export class UploadIngestionService implements UploadIngestionApi {
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
-    return data.id;
+    return requireData(data, "Creating a source document").id;
   }
 
   private async retrySourceDocument(
@@ -304,7 +326,8 @@ export class UploadIngestionService implements UploadIngestionApi {
       vat_number: supplier.vatNumber ?? null,
       email: supplier.email ?? null,
       phone: supplier.phone ?? null,
-      address: supplier.address ?? null
+      address: supplier.address ?? null,
+      active: true
     };
     if (supplier.vatNumber) {
       const { data, error } = await this.database
@@ -313,7 +336,7 @@ export class UploadIngestionService implements UploadIngestionApi {
         .select("id")
         .single<RecordWithId>();
       if (error) throw error;
-      return data.id;
+      return requireData(data, "Upserting a supplier").id;
     }
 
     const { data: existing, error: selectError } = await this.database
@@ -322,7 +345,14 @@ export class UploadIngestionService implements UploadIngestionApi {
       .eq("canonical_name", values.canonical_name)
       .maybeSingle<RecordWithId>();
     if (selectError) throw selectError;
-    if (existing) return existing.id;
+    if (existing) {
+      const { error: updateError } = await this.database
+        .from("suppliers")
+        .update(values)
+        .eq("id", existing.id);
+      if (updateError) throw updateError;
+      return existing.id;
+    }
 
     const { data, error } = await this.database
       .from("suppliers")
@@ -330,7 +360,7 @@ export class UploadIngestionService implements UploadIngestionApi {
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
-    return data.id;
+    return requireData(data, "Creating a supplier").id;
   }
 
   private async insertQuote(
@@ -365,7 +395,7 @@ export class UploadIngestionService implements UploadIngestionApi {
       .single<RecordWithId>();
     if (error) throw error;
     await this.reconcileRevisions(supplierId, quoteNumber);
-    return data.id;
+    return requireData(data, "Creating a quote").id;
   }
 
   private async reconcileRevisions(supplierId: string, quoteNumber: string): Promise<void> {
@@ -422,7 +452,14 @@ export class UploadIngestionService implements UploadIngestionApi {
       .insert(rows)
       .select("id,source_row,description_raw,quantity_raw,unit_raw,unit_rate_raw,line_total_raw,unit_rate_ex_vat");
     if (error) throw error;
-    return (data ?? []) as LineRow[];
+    const inserted = (data ?? []) as LineRow[];
+    if (inserted.length !== rows.length) {
+      throw new UploadIngestionError(
+        `The database returned ${inserted.length} of ${rows.length} inserted quote lines.`,
+        500
+      );
+    }
+    return inserted;
   }
 
   private async matchLineItems(lines: LineRow[]): Promise<UploadedCatalogMatch[]> {
@@ -499,7 +536,7 @@ export class UploadIngestionService implements UploadIngestionApi {
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
-    return data.id;
+    return requireData(data, "Upserting a catalog item").id;
   }
 
   private async loadSummary(input: {
@@ -516,16 +553,18 @@ export class UploadIngestionService implements UploadIngestionApi {
       .eq("source_document_id", input.sourceDocumentId)
       .single<QuoteRow>();
     if (quoteError) throw quoteError;
+    const storedQuote = requireData(quote, "Loading the uploaded quote");
     const { data: supplier, error: supplierError } = await this.database
       .from("suppliers")
       .select("id,display_name")
-      .eq("id", quote.supplier_id)
+      .eq("id", storedQuote.supplier_id)
       .single<SupplierRow>();
     if (supplierError) throw supplierError;
+    const storedSupplier = requireData(supplier, "Loading the quote supplier");
     const { data: lineData, error: lineError } = await this.database
       .from("quote_line_items")
       .select("id,source_row,description_raw,quantity_raw,unit_raw,unit_rate_raw,line_total_raw,unit_rate_ex_vat")
-      .eq("quote_id", quote.id)
+      .eq("quote_id", storedQuote.id)
       .order("created_at", { ascending: true });
     if (lineError) throw lineError;
     const lines = (lineData ?? []) as LineRow[];
@@ -577,13 +616,13 @@ export class UploadIngestionService implements UploadIngestionApi {
       idempotent: input.idempotent,
       sha256: input.sha256,
       filename: input.filename,
-      supplier: { id: supplier.id, name: supplier.display_name },
+      supplier: { id: storedSupplier.id, name: storedSupplier.display_name },
       quote: {
-        id: quote.id,
+        id: storedQuote.id,
         quoteNumber: input.document.quote.quoteNumber,
-        quoteDate: quote.quote_date,
-        currency: quote.currency,
-        total: quote.total_raw === null ? null : Number(quote.total_raw)
+        quoteDate: storedQuote.quote_date,
+        currency: storedQuote.currency,
+        total: storedQuote.total_raw === null ? null : Number(storedQuote.total_raw)
       },
       lineItems,
       warnings: input.warnings

@@ -1,5 +1,6 @@
 import type { SupplierAnalytics } from "@quote-intelligence/domain";
 import { formatDate, formatNumber, zar } from "../format";
+import { useModalAccessibility } from "../use-modal-accessibility";
 
 interface SupplierDetailModalProps {
   supplier: SupplierAnalytics;
@@ -12,6 +13,7 @@ export function SupplierDetailModal({
   onClose,
   onDelete
 }: SupplierDetailModalProps) {
+  const dialogRef = useModalAccessibility(onClose);
   const varianceClass =
     supplier.variancePercent === null
       ? "variance-neutral"
@@ -41,6 +43,8 @@ export function SupplierDetailModal({
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <div
         className="modal supplier-detail-modal"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="supplier-modal-title"
@@ -64,11 +68,11 @@ export function SupplierDetailModal({
 
         <div className="fair-price-hero" style={{ marginBottom: "20px" }}>
           <span>Average Ex-VAT Quoted Rate</span>
-          <strong>{supplier.averageRate ? zar.format(supplier.averageRate) : "—"}</strong>
+          <strong>{supplier.averageRate !== null ? zar.format(supplier.averageRate) : "—"}</strong>
           <small>
             Active quotes on file:{" "}
-            {supplier.firstQuoteDate
-              ? `${formatDate(supplier.firstQuoteDate)} – ${formatDate(supplier.lastQuoteDate!)}`
+            {supplier.firstQuoteDate && supplier.lastQuoteDate
+              ? `${formatDate(supplier.firstQuoteDate)} – ${formatDate(supplier.lastQuoteDate)}`
               : "No quotes recorded"}
           </small>
         </div>
@@ -125,7 +129,7 @@ export function SupplierDetailModal({
               onDelete(supplier.supplierId, supplier.supplierName);
             }}
           >
-            🗑 Delete Vendor
+            🗑 Deactivate Vendor
           </button>
           <button type="button" className="button primary" onClick={onClose}>
             Close

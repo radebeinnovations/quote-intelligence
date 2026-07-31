@@ -17,7 +17,8 @@
     "test": "npm run test --workspaces --if-present",
     "ingest": "npm run ingest -w @quote-intelligence/ingest",
     "ingest:dry-run": "npm run ingest -w @quote-intelligence/ingest -- --dry-run",
-    "catalog:match": "npm run catalog:match -w @quote-intelligence/ingest"
+    "catalog:match": "npm run catalog:match -w @quote-intelligence/ingest",
+    "generate:test-quotes": "node scripts/generate_5_test_quotes.js"
   },
   "engines": {
     "node": ">=20"

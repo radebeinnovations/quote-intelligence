@@ -232,17 +232,19 @@ function AuditRunCard({
                   <tr
                     key={document.id || `${run.id}-${index}`}
                     className="clickable-doc-row"
-                    onClick={() => onSelectDoc(document)}
-                    title="Click to view document preview & extraction audit"
-                    style={{ cursor: "pointer" }}
                   >
                     <td>
-                      <strong>
+                      <button
+                        type="button"
+                        className="audit-document-button"
+                        onClick={() => onSelectDoc(document)}
+                        title="View document preview and extraction audit"
+                      >
                         {typeof document.filename === "string" &&
                         document.filename.trim()
                           ? document.filename
                           : "Unnamed document"}
-                      </strong>
+                      </button>
                       <small>Added {displayDate(document.createdAt)}</small>
                     </td>
                     <td>

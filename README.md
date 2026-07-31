@@ -51,8 +51,9 @@ Row-level security is enabled without public policies by default.
 
 ## Database model
 
-The initial migration is
-[`supabase/migrations/202607240001_initial_schema.sql`](supabase/migrations/202607240001_initial_schema.sql).
+Database migrations live in [`supabase/migrations`](supabase/migrations). Apply the
+full directory in order; the supplier soft-delete migration adds `suppliers.active`
+and updates the analytics view to exclude inactive suppliers and catalog services.
 
 The main layers are:
 
@@ -293,6 +294,13 @@ npm run ingest:dry-run
 
 This parses all ten XLSX files and reports the 41 PDFs as requiring DocuPipe.
 
+Generate five distinct, parser-verified XLSX fixtures in the repository root for
+manual upload testing:
+
+```bash
+npm run generate:test-quotes
+```
+
 ### 5. Test DocuPipe on representative PDFs
 
 Run the built-in three-PDF canary, which selects representative Berghaan, Cape Crew,
@@ -330,6 +338,17 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+Run the real upload-metrics integration test against the configured Supabase project:
+
+```bash
+npm run test:integration -w @quote-intelligence/api
+```
+
+The integration suite generates a unique Protea Events XLSX quote, verifies `/api/stats`
+and `/api/ingestion-runs` before and after ingestion, then removes only records tied to
+the fixture's SHA-256 fingerprint. The regular `npm test` run keeps this networked test
+skipped while still running the API route and frontend React Query synchronization tests.
 
 ## API
 
@@ -374,7 +393,8 @@ or:
 - Geographic, seasonality, and event-size effects are not modeled.
 - Confidence is an evidence heuristic, not inferential statistics.
 - The database integration is verified against Supabase, but automated integration
-  tests still need an ephemeral PostgreSQL/Supabase environment.
+  tests use the configured project and clean up their unique SHA-256 fixture. An
+  ephemeral PostgreSQL/Supabase environment is still preferable for parallel CI.
 
 ## With another week
 
