@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import {
@@ -6,15 +6,31 @@ import {
   type DateRangePreset
 } from "../date-range";
 import { formatDate, formatNumber, zar } from "../format";
+import { CreateSupplierModal } from "./CreateSupplierModal";
 import { DateRangeSelector } from "./DateRangeSelector";
 
 export function SupplierListView() {
+  const queryClient = useQueryClient();
   const [dateRangePreset, setDateRangePreset] =
     useState<DateRangePreset>("all-time");
+  const [showCreateModal, setShowCreateModal] = useState(false);
+
   const suppliers = useQuery({
     queryKey: ["suppliers", dateRangePreset],
     queryFn: () => api.suppliers(resolveDateRange(dateRangePreset))
   });
+
+  async function handleDeleteSupplier(supplierId: string, supplierName: string) {
+    if (window.confirm(`Are you sure you want to delete vendor "${supplierName}"?`)) {
+      try {
+        await api.deleteSupplier(supplierId);
+        void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
+        void queryClient.invalidateQueries({ queryKey: ["stats"] });
+      } catch (err) {
+        alert(err instanceof Error ? err.message : "Failed to delete supplier.");
+      }
+    }
+  }
 
   return (
     <section className="catalog-view suppliers-view">
@@ -27,11 +43,20 @@ export function SupplierListView() {
             canonical market fair-prices.
           </p>
         </div>
-        <DateRangeSelector
-          className="supplier-date-filter"
-          value={dateRangePreset}
-          onChange={setDateRangePreset}
-        />
+        <div className="heading-actions">
+          <DateRangeSelector
+            className="supplier-date-filter"
+            value={dateRangePreset}
+            onChange={setDateRangePreset}
+          />
+          <button
+            className="button secondary"
+            onClick={() => setShowCreateModal(true)}
+            title="Register a new supplier"
+          >
+            + Add Supplier
+          </button>
+        </div>
       </div>
 
       {suppliers.isLoading && <div className="detail-loading">Loading supplier analytics…</div>}
@@ -65,7 +90,16 @@ export function SupplierListView() {
               <div className="catalog-card supplier-card" key={s.supplierId}>
                 <div className="card-topline">
                   <span className={`variance-tag ${varianceClass}`}>{varianceText}</span>
-                  <span className="arrow">↗</span>
+                  <div className="card-topline-actions">
+                    <span
+                      className="delete-icon-btn"
+                      title="Delete supplier"
+                      onClick={() => handleDeleteSupplier(s.supplierId, s.supplierName)}
+                    >
+                      🗑
+                    </span>
+                    <span className="arrow">↗</span>
+                  </div>
                 </div>
                 <h3>{s.supplierName}</h3>
                 <p>
@@ -106,6 +140,17 @@ export function SupplierListView() {
             );
           })}
         </div>
+      )}
+
+      {showCreateModal && (
+        <CreateSupplierModal
+          onClose={() => setShowCreateModal(false)}
+          onSaved={() => {
+            setShowCreateModal(false);
+            void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
+            void queryClient.invalidateQueries({ queryKey: ["stats"] });
+          }}
+        />
       )}
     </section>
   );

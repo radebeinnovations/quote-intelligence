@@ -187,3 +187,21 @@ export interface ReassignLineItemResult {
   canonicalRate: number | null;
   canonicalBasis: string | null;
 }
+
+export const createSupplierSchema = z.object({
+  name: z.string().trim().min(2, "Supplier name must be at least 2 characters.").max(120),
+  email: z.string().trim().email("Invalid email address.").optional().or(z.literal("")),
+  phone: z.string().trim().max(50).optional().or(z.literal(""))
+});
+
+export type CreateSupplierInput = z.infer<typeof createSupplierSchema>;
+
+export const createCatalogItemSchema = z.object({
+  name: z.string().trim().min(2, "Service name must be at least 2 characters.").max(120),
+  category: z.string().trim().min(2).max(60).default("General"),
+  description: z.string().trim().max(500).optional().or(z.literal("")),
+  pricingBasis: z.string().trim().min(1, "Pricing basis is required.").max(50).default("item")
+});
+
+export type CreateCatalogItemInput = z.infer<typeof createCatalogItemSchema>;
+

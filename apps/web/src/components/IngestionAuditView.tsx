@@ -3,8 +3,10 @@ import type {
   IngestionRunAudit
 } from "@quote-intelligence/domain";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { api } from "../api";
 import { formatDate, formatNumber } from "../format";
+import { DocumentPreviewModal } from "./DocumentPreviewModal";
 
 function safeWarnings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -67,6 +69,11 @@ function documentStatusClass(status: unknown): string {
 }
 
 export function IngestionAuditView() {
+  const [selectedDoc, setSelectedDoc] = useState<{
+    document: IngestionDocumentAudit;
+    runId: string;
+  } | null>(null);
+
   const audit = useQuery({
     queryKey: ["ingestion-audit"],
     queryFn: api.ingestionAudit
@@ -80,7 +87,7 @@ export function IngestionAuditView() {
           <h2>Parsing &amp; Audit Log</h2>
           <p>
             Track document extraction runs, SHA-256 idempotency hashes,
-            DocuPipe/XLSX parsing status, and extraction warnings.
+            DocuPipe/XLSX parsing status, and extraction warnings. Hover or click any row to preview document details.
           </p>
         </div>
       </div>
@@ -110,15 +117,33 @@ export function IngestionAuditView() {
       ) : (
         <div className="audit-list">
           {audit.data.map((run) => (
-            <AuditRunCard run={run} key={run.id} />
+            <AuditRunCard
+              run={run}
+              key={run.id}
+              onSelectDoc={(document) => setSelectedDoc({ document, runId: run.id })}
+            />
           ))}
         </div>
+      )}
+
+      {selectedDoc && (
+        <DocumentPreviewModal
+          document={selectedDoc.document}
+          runId={selectedDoc.runId}
+          onClose={() => setSelectedDoc(null)}
+        />
       )}
     </section>
   );
 }
 
-function AuditRunCard({ run }: { run: IngestionRunAudit }) {
+function AuditRunCard({
+  run,
+  onSelectDoc
+}: {
+  run: IngestionRunAudit;
+  onSelectDoc: (doc: IngestionDocumentAudit) => void;
+}) {
   const documents = safeDocuments(run);
   const warningCount = documents.reduce(
     (total, document) => total + safeWarnings(document.warnings).length,
@@ -204,7 +229,13 @@ function AuditRunCard({ run }: { run: IngestionRunAudit }) {
                     : "unknown";
 
                 return (
-                  <tr key={document.id || `${run.id}-${index}`}>
+                  <tr
+                    key={document.id || `${run.id}-${index}`}
+                    className="clickable-doc-row"
+                    onClick={() => onSelectDoc(document)}
+                    title="Click to view document preview & extraction audit"
+                    style={{ cursor: "pointer" }}
+                  >
                     <td>
                       <strong>
                         {typeof document.filename === "string" &&

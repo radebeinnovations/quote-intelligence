@@ -3,6 +3,8 @@ import {
   normalizeCatalogRate,
   type CatalogDetailResponse,
   type CatalogSummary,
+  type CreateCatalogItemInput,
+  type CreateSupplierInput,
   type DateRangeQuery,
   type FairPriceDetail,
   type IngestionRunAudit,
@@ -559,6 +561,55 @@ export class CatalogService {
         createdAt: document.created_at
       }))
     }));
+  }
+
+  async createSupplier(input: CreateSupplierInput): Promise<{ id: string; name: string }> {
+    const { data, error } = await this.database
+      .from("suppliers")
+      .insert({
+        display_name: input.name,
+        email: input.email || null,
+        phone: input.phone || null
+      })
+      .select("id,display_name")
+      .single<{ id: string; display_name: string }>();
+    if (error) throw error;
+    return { id: data.id, name: data.display_name };
+  }
+
+  async createCatalogItem(input: CreateCatalogItemInput): Promise<CatalogSummary> {
+    const { data, error } = await this.database
+      .from("catalog_items")
+      .insert({
+        name: input.name,
+        category: input.category || "General",
+        description: input.description || null,
+        canonical_unit: input.pricingBasis || "item",
+        canonical_pricing_basis: input.pricingBasis || "item",
+        attributes: {}
+      })
+      .select("id,name,description,category,canonical_unit,canonical_pricing_basis,attributes")
+      .single<CatalogRow>();
+    if (error) throw error;
+    return this.summary(data, []);
+  }
+
+  async deleteSupplier(id: string): Promise<{ success: boolean }> {
+    const { error } = await this.database
+      .from("suppliers")
+      .delete()
+      .eq("id", id);
+    if (error) throw error;
+    return { success: true };
+  }
+
+  async deleteCatalogItem(id: string): Promise<{ success: boolean }> {
+    const { error } = await this.database
+      .from("catalog_items")
+      .update({ active: false })
+      .eq("id", id);
+    if (error) throw error;
+    return { success: true };
   }
 
   private dateFilteredQuery<T extends {

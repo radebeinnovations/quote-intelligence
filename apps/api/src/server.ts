@@ -1,6 +1,10 @@
 import cors from "@fastify/cors";
 import { createServiceDatabaseClient } from "@quote-intelligence/database";
-import { reassignLineItemSchema } from "@quote-intelligence/domain";
+import {
+  createCatalogItemSchema,
+  createSupplierSchema,
+  reassignLineItemSchema
+} from "@quote-intelligence/domain";
 import dotenv from "dotenv";
 import Fastify from "fastify";
 import { fileURLToPath } from "node:url";
@@ -14,7 +18,17 @@ dotenv.config({
 
 export type CatalogApiService = Pick<
   CatalogService,
-  "list" | "detail" | "unmatched" | "reassign" | "stats" | "suppliers" | "ingestionAudit"
+  | "list"
+  | "detail"
+  | "unmatched"
+  | "reassign"
+  | "stats"
+  | "suppliers"
+  | "ingestionAudit"
+  | "createSupplier"
+  | "createCatalogItem"
+  | "deleteSupplier"
+  | "deleteCatalogItem"
 >;
 
 interface BuildServerOptions {
@@ -70,11 +84,22 @@ export async function buildServer(options: BuildServerOptions = {}) {
     return catalog.list({ query: query.q, page: query.page, pageSize: query.pageSize });
   });
 
+  app.post("/api/catalog", async (request, reply) => {
+    const input = createCatalogItemSchema.parse(request.body);
+    const item = await catalog.createCatalogItem(input);
+    return reply.status(201).send(item);
+  });
+
   app.get("/api/catalog/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const detail = await catalog.detail(id);
     if (!detail) return reply.status(404).send({ error: "Catalog item not found." });
     return detail;
+  });
+
+  app.delete("/api/catalog/:id", async (request) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    return catalog.deleteCatalogItem(id);
   });
 
   app.get("/api/line-items/unmatched", async () => catalog.unmatched());
@@ -108,6 +133,17 @@ export async function buildServer(options: BuildServerOptions = {}) {
       ...(query.from ? { from: query.from } : {}),
       ...(query.to ? { to: query.to } : {})
     });
+  });
+
+  app.post("/api/suppliers", async (request, reply) => {
+    const input = createSupplierSchema.parse(request.body);
+    const supplier = await catalog.createSupplier(input);
+    return reply.status(201).send(supplier);
+  });
+
+  app.delete("/api/suppliers/:id", async (request) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    return catalog.deleteSupplier(id);
   });
 
   app.get("/api/ingestion-runs", async () => catalog.ingestionAudit());

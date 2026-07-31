@@ -1,5 +1,8 @@
 import type {
   CatalogDetailResponse,
+  CatalogSummary,
+  CreateCatalogItemInput,
+  CreateSupplierInput,
   DateRangeQuery,
   IngestionRunAudit,
   PaginatedCatalogResponse,
@@ -31,6 +34,13 @@ export const api = {
     request<PaginatedCatalogResponse>(
       `/api/catalog?q=${encodeURIComponent(query)}&page=${page}&pageSize=${pageSize}`
     ),
+  createCatalogItem: (input: CreateCatalogItemInput) =>
+    request<CatalogSummary>("/api/catalog", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  deleteCatalogItem: (id: string) =>
+    request<{ success: boolean }>(`/api/catalog/${id}`, { method: "DELETE" }),
   catalogDetail: (id: string) => request<CatalogDetailResponse>(`/api/catalog/${id}`),
   unmatchedLineItems: () =>
     request<UnmatchedLineItemsResponse>("/api/line-items/unmatched"),
@@ -46,5 +56,12 @@ export const api = {
     const query = params.toString();
     return request<SupplierAnalytics[]>(`/api/suppliers${query ? `?${query}` : ""}`);
   },
+  createSupplier: (input: CreateSupplierInput) =>
+    request<{ id: string; name: string }>("/api/suppliers", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  deleteSupplier: (id: string) =>
+    request<{ success: boolean }>(`/api/suppliers/${id}`, { method: "DELETE" }),
   ingestionAudit: () => request<IngestionRunAudit[]>("/api/ingestion-runs")
 };

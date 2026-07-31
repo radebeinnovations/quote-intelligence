@@ -1,11 +1,14 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { formatNumber, zar } from "../format";
+import { CreateCatalogItemModal } from "./CreateCatalogItemModal";
 
 export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void }) {
+  const queryClient = useQueryClient();
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setQuery(input.trim()), 250);
@@ -17,6 +20,19 @@ export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void })
     queryFn: () => api.catalog(query, 1, 50)
   });
 
+  async function handleDelete(event: React.MouseEvent, itemId: string, itemName: string) {
+    event.stopPropagation();
+    if (window.confirm(`Are you sure you want to delete "${itemName}" from the procurement catalog?`)) {
+      try {
+        await api.deleteCatalogItem(itemId);
+        void queryClient.invalidateQueries({ queryKey: ["catalog"] });
+        void queryClient.invalidateQueries({ queryKey: ["stats"] });
+      } catch (err) {
+        alert(err instanceof Error ? err.message : "Failed to delete service.");
+      }
+    }
+  }
+
   return (
     <section className="catalog-view">
       <div className="page-heading">
@@ -25,16 +41,25 @@ export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void })
           <h2>Comparable services, one clear view.</h2>
           <p>Every price below is normalized to an ex-VAT comparison basis.</p>
         </div>
-        <label className="search-box">
-          <span aria-hidden="true">⌕</span>
-          <input
-            type="search"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            placeholder="Search services or descriptions"
-            aria-label="Search catalog"
-          />
-        </label>
+        <div className="heading-actions">
+          <label className="search-box">
+            <span aria-hidden="true">⌕</span>
+            <input
+              type="search"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="Search services or descriptions"
+              aria-label="Search catalog"
+            />
+          </label>
+          <button
+            className="button secondary"
+            onClick={() => setShowCreateModal(true)}
+            title="Add a new canonical catalog service"
+          >
+            + Add Service
+          </button>
+        </div>
       </div>
 
       {catalog.isLoading && <CatalogSkeleton />}
@@ -60,7 +85,16 @@ export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void })
           >
             <div className="card-topline">
               <span className="category-pill">{item.category}</span>
-              <span className="arrow">↗</span>
+              <div className="card-topline-actions">
+                <span
+                  className="delete-icon-btn"
+                  title="Delete service"
+                  onClick={(e) => handleDelete(e, item.id, item.name)}
+                >
+                  🗑
+                </span>
+                <span className="arrow">↗</span>
+              </div>
             </div>
             <h3>{item.name}</h3>
             <p>{item.description ?? "Canonical service with linked supplier pricing."}</p>
@@ -90,6 +124,17 @@ export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void })
           </button>
         ))}
       </div>
+
+      {showCreateModal && (
+        <CreateCatalogItemModal
+          onClose={() => setShowCreateModal(false)}
+          onSaved={() => {
+            setShowCreateModal(false);
+            void queryClient.invalidateQueries({ queryKey: ["catalog"] });
+            void queryClient.invalidateQueries({ queryKey: ["stats"] });
+          }}
+        />
+      )}
     </section>
   );
 }
