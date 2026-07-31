@@ -48,6 +48,40 @@ export interface IngestionRunAudit {
   documents: IngestionDocumentAudit[];
 }
 
+export interface UploadedCatalogMatch {
+  catalogItemId: string | null;
+  catalogItemName: string | null;
+  status: "matched" | "review" | "unmatched";
+  confidence: number | null;
+}
+
+export interface UploadedQuoteLineItem {
+  id: string;
+  sourceRow: string | null;
+  description: string;
+  quantity: number;
+  unit: string;
+  unitRate: number;
+  lineTotal: number;
+  match: UploadedCatalogMatch;
+}
+
+export interface UploadQuoteResponse {
+  idempotent: boolean;
+  sha256: string;
+  filename: string;
+  supplier: { id: string; name: string };
+  quote: {
+    id: string;
+    quoteNumber: string;
+    quoteDate: string;
+    currency: string;
+    total: number | null;
+  };
+  lineItems: UploadedQuoteLineItem[];
+  warnings: string[];
+}
+
 export interface CatalogSummary {
   id: string;
   name: string;
@@ -204,4 +238,3 @@ export const createCatalogItemSchema = z.object({
 });
 
 export type CreateCatalogItemInput = z.infer<typeof createCatalogItemSchema>;
-

@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import { createServiceDatabaseClient } from "@quote-intelligence/database";
 import {
   createCatalogItemSchema,
@@ -7,14 +8,33 @@ import {
 } from "@quote-intelligence/domain";
 import dotenv from "dotenv";
 import Fastify from "fastify";
+import { copyFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { CatalogService } from "./catalog-service";
+import {
+  UploadIngestionError,
+  UploadIngestionService,
+  type UploadFileType,
+  type UploadIngestionApi
+} from "./upload-ingestion-service";
 
 dotenv.config({
   path: resolve(fileURLToPath(new URL("../../../", import.meta.url)), ".env")
 });
+
+// Create a copy of a sample quote directly in the root directory for easy user testing
+try {
+  const rootDir = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+  const sampleSource = resolve(rootDir, "candidate-pack/sample-quotes/Nightjar_Quote_AwardsDinner.xlsx");
+  const sampleTarget = resolve(rootDir, "SAMPLE_QUOTE_TO_TEST.xlsx");
+  if (existsSync(sampleSource)) {
+    copyFileSync(sampleSource, sampleTarget);
+  }
+} catch (e) {
+  // Ignore fallback file creation errors
+}
 
 export type CatalogApiService = Pick<
   CatalogService,
@@ -33,6 +53,7 @@ export type CatalogApiService = Pick<
 
 interface BuildServerOptions {
   catalog?: CatalogApiService;
+  uploadIngestion?: UploadIngestionApi;
   logger?: boolean;
 }
 
@@ -40,6 +61,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true });
   const catalog =
     options.catalog ?? new CatalogService(createServiceDatabaseClient());
+  let uploadIngestion = options.uploadIngestion;
   const configuredOrigins = [
     "http://localhost:5173",
     "http://localhost:5174",
@@ -53,6 +75,13 @@ export async function buildServer(options: BuildServerOptions = {}) {
       callback(null, !origin || configuredOrigins.includes(origin));
     }
   });
+  await app.register(multipart, {
+    limits: {
+      files: 1,
+      fields: 0,
+      fileSize: 25 * 1024 * 1024
+    }
+  });
 
   app.setErrorHandler((error, _request, reply) => {
     app.log.error(error);
@@ -62,7 +91,13 @@ export async function buildServer(options: BuildServerOptions = {}) {
         issues: error.issues
       });
     }
-    return reply.status(500).send({
+    const statusCode = error instanceof UploadIngestionError
+      ? error.statusCode
+      : typeof error === "object" && error !== null &&
+          "statusCode" in error && typeof error.statusCode === "number"
+        ? error.statusCode
+        : 500;
+    return reply.status(statusCode).send({
       error: "The request could not be completed.",
       message: error instanceof Error ? error.message : String(error)
     });
@@ -72,6 +107,40 @@ export async function buildServer(options: BuildServerOptions = {}) {
     status: "ok",
     service: "quote-intelligence-api"
   }));
+
+  app.post("/api/ingest/upload", async (request, reply) => {
+    if (!request.isMultipart()) {
+      throw new UploadIngestionError("Expected a multipart/form-data upload.", 415);
+    }
+    const file = await request.file();
+    if (!file) throw new UploadIngestionError("Attach one PDF or XLSX quote file.", 400);
+
+    const filename = file.filename.split(/[\\/]/).pop()?.trim() ?? "";
+    const extension = filename.match(/\.(pdf|xlsx)$/i)?.[0].toLowerCase() ?? "";
+    if (extension !== ".pdf" && extension !== ".xlsx") {
+      file.file.resume();
+      throw new UploadIngestionError("Only .pdf and .xlsx quote files are supported.", 415);
+    }
+    const contents = await file.toBuffer();
+    if (!contents.length) throw new UploadIngestionError("The uploaded file is empty.", 400);
+    if (extension === ".pdf" && contents.subarray(0, 5).toString("ascii") !== "%PDF-") {
+      throw new UploadIngestionError("The uploaded file is not a valid PDF document.", 415);
+    }
+    if (
+      extension === ".xlsx" &&
+      !(contents[0] === 0x50 && contents[1] === 0x4b)
+    ) {
+      throw new UploadIngestionError("The uploaded file is not a valid XLSX workbook.", 415);
+    }
+
+    uploadIngestion ??= new UploadIngestionService();
+    const result = await uploadIngestion.ingest({
+      filename,
+      fileType: extension.slice(1) as UploadFileType,
+      contents
+    });
+    return reply.status(result.idempotent ? 200 : 201).send(result);
+  });
 
   app.get("/api/catalog", async (request) => {
     const query = z

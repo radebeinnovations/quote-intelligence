@@ -10,8 +10,59 @@ import type {
   ReassignLineItemResult,
   UnmatchedLineItemsResponse,
   StatsResponse,
-  SupplierAnalytics
+  SupplierAnalytics,
+  UploadQuoteResponse
 } from "@quote-intelligence/domain";
+
+export interface QuoteUploadProgress {
+  phase: "uploading" | "parsing";
+  percent: number | null;
+}
+
+function uploadQuote(
+  file: File,
+  onProgress: (progress: QuoteUploadProgress) => void
+): Promise<UploadQuoteResponse> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append("file", file);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/ingest/upload");
+    xhr.timeout = 8 * 60 * 1000;
+    xhr.upload.onprogress = (event) => {
+      onProgress({
+        phase: "uploading",
+        percent: event.lengthComputable
+          ? Math.min(100, Math.round((event.loaded / event.total) * 100))
+          : null
+      });
+    };
+    xhr.upload.onload = () => onProgress({ phase: "parsing", percent: null });
+    xhr.onerror = () => reject(new Error("The quote upload could not reach the API."));
+    xhr.ontimeout = () => reject(new Error("Document parsing timed out. Please try again."));
+    xhr.onload = () => {
+      const payload = (() => {
+        try {
+          return JSON.parse(xhr.responseText) as UploadQuoteResponse & {
+            error?: string;
+            message?: string;
+          };
+        } catch {
+          return null;
+        }
+      })();
+      if (xhr.status >= 200 && xhr.status < 300 && payload) {
+        resolve(payload);
+        return;
+      }
+      reject(new Error(
+        payload?.message ?? payload?.error ?? `Upload failed with status ${xhr.status}.`
+      ));
+    };
+    onProgress({ phase: "uploading", percent: 0 });
+    xhr.send(form);
+  });
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -63,5 +114,6 @@ export const api = {
     }),
   deleteSupplier: (id: string) =>
     request<{ success: boolean }>(`/api/suppliers/${id}`, { method: "DELETE" }),
-  ingestionAudit: () => request<IngestionRunAudit[]>("/api/ingestion-runs")
+  ingestionAudit: () => request<IngestionRunAudit[]>("/api/ingestion-runs"),
+  uploadQuote
 };

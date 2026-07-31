@@ -5,11 +5,13 @@ import type {
   ReassignLineItemResult,
   StatsResponse,
   SupplierAnalytics,
-  UnmatchedLineItemsResponse
+  UnmatchedLineItemsResponse,
+  UploadQuoteResponse
 } from "@quote-intelligence/domain";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildServer, type CatalogApiService } from "./server";
+import type { UploadIngestionApi } from "./upload-ingestion-service";
 
 const catalogItemId = "11111111-1111-4111-8111-111111111111";
 const lineItemId = "22222222-2222-4222-8222-222222222222";
@@ -138,10 +140,40 @@ const reassignResponse: ReassignLineItemResult = {
 
 const suppliersResponse: SupplierAnalytics[] = [];
 const ingestionAuditResponse: IngestionRunAudit[] = [];
+const uploadResponse: UploadQuoteResponse = {
+  idempotent: false,
+  sha256: "a".repeat(64),
+  filename: "quote.pdf",
+  supplier: { id: "55555555-5555-4555-8555-555555555555", name: "Cape Crew" },
+  quote: {
+    id: "44444444-4444-4444-8444-444444444444",
+    quoteNumber: "CC-101",
+    quoteDate: "2026-07-31",
+    currency: "ZAR",
+    total: 920
+  },
+  lineItems: [{
+    id: lineItemId,
+    sourceRow: "12",
+    description: "Waiter per hour",
+    quantity: 8,
+    unit: "hour",
+    unitRate: 100,
+    lineTotal: 800,
+    match: {
+      catalogItemId,
+      catalogItemName: "Waitstaff",
+      status: "matched",
+      confidence: 0.98
+    }
+  }],
+  warnings: []
+};
 
 describe("Quote Intelligence API", () => {
   let app: FastifyInstance;
   let service: CatalogApiService;
+  let uploadIngestion: UploadIngestionApi;
 
   beforeEach(async () => {
     service = {
@@ -151,9 +183,14 @@ describe("Quote Intelligence API", () => {
       reassign: vi.fn(async () => ({ status: "ok" as const, result: reassignResponse })),
       stats: vi.fn(async () => statsResponse),
       suppliers: vi.fn(async () => suppliersResponse),
-      ingestionAudit: vi.fn(async () => ingestionAuditResponse)
+      ingestionAudit: vi.fn(async () => ingestionAuditResponse),
+      createSupplier: vi.fn(async () => ({ id: "55555555-5555-4555-8555-555555555555", name: "New Supplier" })),
+      createCatalogItem: vi.fn(async () => catalogPage.items[0]!),
+      deleteSupplier: vi.fn(async () => ({ success: true })),
+      deleteCatalogItem: vi.fn(async () => ({ success: true }))
     };
-    app = await buildServer({ catalog: service, logger: false });
+    uploadIngestion = { ingest: vi.fn(async () => uploadResponse) };
+    app = await buildServer({ catalog: service, uploadIngestion, logger: false });
   });
 
   afterEach(async () => {
@@ -239,6 +276,73 @@ describe("Quote Intelligence API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(ingestionAuditResponse);
     expect(service.ingestionAudit).toHaveBeenCalledOnce();
+  });
+
+  it("POST /api/ingest/upload accepts a PDF buffer and returns extraction results", async () => {
+    const boundary = "quote-upload-boundary";
+    const payload = Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="quote.pdf"\r\n` +
+      `Content-Type: application/pdf\r\n\r\n` +
+      `%PDF-1.7 test\r\n` +
+      `--${boundary}--\r\n`
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/ingest/upload",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual(uploadResponse);
+    expect(uploadIngestion.ingest).toHaveBeenCalledWith(expect.objectContaining({
+      filename: "quote.pdf",
+      fileType: "pdf"
+    }));
+  });
+
+  it("POST /api/ingest/upload routes an XLSX buffer without a path helper", async () => {
+    const boundary = "xlsx-upload-boundary";
+    const preamble = Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="SAMPLE_QUOTE_TO_TEST.xlsx"\r\n` +
+      `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n`
+    );
+    const payload = Buffer.concat([
+      preamble,
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from(`\r\n--${boundary}--\r\n`)
+    ]);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/ingest/upload",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(uploadIngestion.ingest).toHaveBeenCalledWith(expect.objectContaining({
+      filename: "SAMPLE_QUOTE_TO_TEST.xlsx",
+      fileType: "xlsx"
+    }));
+  });
+
+  it("POST /api/ingest/upload rejects unsupported file types", async () => {
+    const boundary = "quote-upload-boundary";
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/ingest/upload",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload: Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="quote.txt"\r\n\r\n` +
+        `not a quote\r\n--${boundary}--\r\n`
+      )
+    });
+
+    expect(response.statusCode).toBe(415);
+    expect(uploadIngestion.ingest).not.toHaveBeenCalled();
   });
 
   it.each(["http://localhost:5173", "http://localhost:5174"])(

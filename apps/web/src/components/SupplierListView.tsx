@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { SupplierAnalytics } from "@quote-intelligence/domain";
 import { useState } from "react";
 import { api } from "../api";
 import {
@@ -8,12 +9,14 @@ import {
 import { formatDate, formatNumber, zar } from "../format";
 import { CreateSupplierModal } from "./CreateSupplierModal";
 import { DateRangeSelector } from "./DateRangeSelector";
+import { SupplierDetailModal } from "./SupplierDetailModal";
 
 export function SupplierListView() {
   const queryClient = useQueryClient();
   const [dateRangePreset, setDateRangePreset] =
     useState<DateRangePreset>("all-time");
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [selectedSupplier, setSelectedSupplier] = useState<SupplierAnalytics | null>(null);
 
   const suppliers = useQuery({
     queryKey: ["suppliers", dateRangePreset],
@@ -40,7 +43,7 @@ export function SupplierListView() {
           <h2>Vendor Pricing Performance</h2>
           <p>
             Evaluate supplier quote history, line volume, and pricing variance against
-            canonical market fair-prices.
+            canonical market fair-prices. Click any supplier card to inspect analytics.
           </p>
         </div>
         <div className="heading-actions">
@@ -87,14 +90,22 @@ export function SupplierListView() {
                 : `${s.variancePercent.toFixed(1)}% vs Market`;
 
             return (
-              <div className="catalog-card supplier-card" key={s.supplierId}>
+              <div
+                className="catalog-card supplier-card"
+                key={s.supplierId}
+                onClick={() => setSelectedSupplier(s)}
+                style={{ cursor: "pointer" }}
+              >
                 <div className="card-topline">
                   <span className={`variance-tag ${varianceClass}`}>{varianceText}</span>
                   <div className="card-topline-actions">
                     <span
                       className="delete-icon-btn"
                       title="Delete supplier"
-                      onClick={() => handleDeleteSupplier(s.supplierId, s.supplierName)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteSupplier(s.supplierId, s.supplierName);
+                      }}
                     >
                       🗑
                     </span>
@@ -150,6 +161,14 @@ export function SupplierListView() {
             void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
             void queryClient.invalidateQueries({ queryKey: ["stats"] });
           }}
+        />
+      )}
+
+      {selectedSupplier && (
+        <SupplierDetailModal
+          supplier={selectedSupplier}
+          onClose={() => setSelectedSupplier(null)}
+          onDelete={(id, name) => handleDeleteSupplier(id, name)}
         />
       )}
     </section>

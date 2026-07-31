@@ -13,6 +13,7 @@ import { IngestionAuditView } from "./components/IngestionAuditView";
 import { StatCard } from "./components/StatCard";
 import { SupplierListView } from "./components/SupplierListView";
 import { UnmatchedItemsView } from "./components/UnmatchedItemsView";
+import { UploadQuoteModal } from "./components/UploadQuoteModal";
 import { formatDate, formatNumber } from "./format";
 
 type Route =
@@ -83,6 +84,7 @@ class AppErrorBoundary extends Component<
 function AppContent() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [route, setRoute] = useState<Route>(currentRoute);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const stats = useQuery({ queryKey: ["stats"], queryFn: api.stats });
 
   useEffect(() => {
@@ -158,13 +160,18 @@ function AppContent() {
       <div className="main-column">
         <header className="topbar">
           <div><p>Procurement workspace</p><span>{dateRange}</span></div>
-          <button
-            className="theme-toggle"
-            onClick={() => setTheme((value) => (value === "dark" ? "light" : "dark"))}
-            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-          >
-            {theme === "dark" ? "☀" : "◐"}
-          </button>
+          <div className="topbar-actions">
+            <button className="button upload-quote-button" onClick={() => setUploadOpen(true)}>
+              ↑ Upload Quote PDF
+            </button>
+            <button
+              className="theme-toggle"
+              onClick={() => setTheme((value) => (value === "dark" ? "light" : "dark"))}
+              aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            >
+              {theme === "dark" ? "☀" : "◐"}
+            </button>
+          </div>
         </header>
 
         <div className="stats-strip">
@@ -193,6 +200,7 @@ function AppContent() {
           )}
         </main>
       </div>
+      {uploadOpen && <UploadQuoteModal onClose={() => setUploadOpen(false)} />}
     </div>
   );
 }

@@ -340,6 +340,11 @@ npm run build
 | GET | `/api/catalog/:id` | Price history, comparison, benchmark, linked lines |
 | GET | `/api/line-items/unmatched` | Conservative non-matches for the review queue |
 | POST | `/api/line-items/:id/reassign` | Reassign or split a match |
+| POST | `/api/ingest/upload` | Ingest one PDF/XLSX quote from multipart field `file` (25 MB max) |
+
+The upload endpoint hashes the file with SHA-256, returns the existing extraction for
+duplicate content, and otherwise parses, persists, audits, and catalog-matches the quote
+before returning its supplier and line-by-line extraction summary.
 
 Reassignment body accepts exactly one:
 

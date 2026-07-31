@@ -12,10 +12,13 @@
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
+    "@fastify/multipart": "^9.0.0",
     "@quote-intelligence/database": "0.1.0",
     "@quote-intelligence/domain": "0.1.0",
     "dotenv": "^16.4.0",
+    "fast-xml-parser": "^5.2.0",
     "fastify": "^5.2.0",
+    "fflate": "^0.8.2",
     "zod": "^3.24.0"
   },
   "devDependencies": {
