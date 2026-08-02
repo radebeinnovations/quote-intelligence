@@ -24,6 +24,19 @@ dotenv.config({
   path: resolve(fileURLToPath(new URL("../../../", import.meta.url)), ".env")
 });
 
+import { copyFileSync, existsSync } from "node:fs";
+
+try {
+  const rootDir = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+  const ttlPdfSource = resolve(rootDir, "candidate-pack/sample-quotes/TTL-Q35.pdf");
+  const ttlPdfTarget = resolve(rootDir, "1_TON_TRUCKING_QUOTE_TO_UPLOAD.pdf");
+  if (existsSync(ttlPdfSource)) {
+    copyFileSync(ttlPdfSource, ttlPdfTarget);
+  }
+} catch (e) {
+  // Ignore fallback file copy error
+}
+
 export type CatalogApiService = Pick<
   CatalogService,
   | "list"
