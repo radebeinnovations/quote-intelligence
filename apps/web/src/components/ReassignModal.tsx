@@ -1,5 +1,5 @@
 import type { CatalogSummary, LinkedLineItem } from "@quote-intelligence/domain";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useModalAccessibility } from "../use-modal-accessibility";
 
@@ -24,9 +24,17 @@ export function ReassignModal({
   const dialogRef = useModalAccessibility(onClose);
   const [mode, setMode] = useState<"existing" | "new">("existing");
   const [targetId, setTargetId] = useState(catalogItems[0]?.id ?? "");
+  const [targetVariantId, setTargetVariantId] = useState("");
   const [newName, setNewName] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const targetItem = catalogItems.find(({ id }) => id === targetId);
+
+  useEffect(() => {
+    if (!targetId && catalogItems.length > 0) {
+      setTargetId(catalogItems[0]?.id ?? "");
+    }
+  }, [catalogItems, targetId]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -36,7 +44,10 @@ export function ReassignModal({
       await api.reassign(
         lineItem.id,
         mode === "existing"
-          ? { targetCatalogItemId: targetId }
+          ? {
+              targetCatalogItemId: targetId,
+              ...(targetVariantId ? { targetVariantId } : {})
+            }
           : { newCatalogItemName: newName.trim() }
       );
       onSaved();
@@ -48,7 +59,11 @@ export function ReassignModal({
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={() => { if (!saving) onClose(); }}
+    >
       <div
         className="modal"
         ref={dialogRef}
@@ -58,7 +73,12 @@ export function ReassignModal({
         aria-labelledby="reassign-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <button className="icon-button modal-close" onClick={onClose} aria-label="Close">
+        <button
+          className="icon-button modal-close"
+          onClick={onClose}
+          aria-label="Close"
+          disabled={saving}
+        >
           ×
         </button>
         <p className="eyebrow">Correct catalog match</p>
@@ -89,13 +109,36 @@ export function ReassignModal({
             <>
               <label className="field">
                 <span>Target catalog service</span>
-                <select value={targetId} onChange={(event) => setTargetId(event.target.value)} required>
+                <select
+                  value={targetId}
+                  onChange={(event) => {
+                    setTargetId(event.target.value);
+                    setTargetVariantId("");
+                  }}
+                  required
+                >
                   <option value="" disabled>Select a service</option>
                   {catalogItems.map((item) => (
                     <option key={item.id} value={item.id}>{item.name}</option>
                   ))}
                 </select>
               </label>
+              {targetItem && targetItem.variants.length > 0 && (
+                <label className="field">
+                  <span>Target variant</span>
+                  <select
+                    value={targetVariantId}
+                    onChange={(event) => setTargetVariantId(event.target.value)}
+                  >
+                    <option value="">Base profile / unspecified</option>
+                    {targetItem.variants.map((variant) => (
+                      <option key={variant.id} value={variant.id}>
+                        {variant.label} · per {variant.pricingBasis}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {catalogOptionsError && <p className="form-error" role="alert">{catalogOptionsError}</p>}
             </>
           ) : (

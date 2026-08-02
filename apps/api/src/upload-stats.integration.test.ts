@@ -2,7 +2,7 @@ import { createServiceDatabaseClient } from "@quote-intelligence/database";
 import type {
   IngestionRunAudit,
   StatsResponse,
-  SupplierAnalytics,
+  SupplierPerformance,
   UploadQuoteResponse
 } from "@quote-intelligence/domain";
 import { createHash, randomUUID } from "node:crypto";
@@ -126,7 +126,7 @@ integrationSuite("quote upload metric integration", () => {
     const initialSuppliersResponse = await app.inject({ method: "GET", url: "/api/suppliers" });
     expect(initialSuppliersResponse.statusCode).toBe(200);
     const initialSupplierIds = new Set(
-      initialSuppliersResponse.json<SupplierAnalytics[]>().map(({ supplierId }) => supplierId)
+      initialSuppliersResponse.json<SupplierPerformance[]>().map(({ supplierId }) => supplierId)
     );
     const { data: initialCatalog, error: initialCatalogError } = await database
       .from("catalog_items")

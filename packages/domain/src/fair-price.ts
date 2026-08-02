@@ -11,6 +11,9 @@ export interface FairPriceResult {
   mean: number | null;
   minimum: number | null;
   maximum: number | null;
+  iqrLow: number | null;
+  iqrHigh: number | null;
+  filteredMean: number | null;
   sampleSize: number;
   supplierCount: number;
   method: "no-data" | "median" | "weighted-median";
@@ -27,6 +30,19 @@ function median(values: number[]): number | null {
   return lower === undefined ? upper : (lower + upper) / 2;
 }
 
+function iqrBounds(values: number[]): { low: number; high: number } | null {
+  if (values.length < 4) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  const lower = sorted.slice(0, middle);
+  const upper = sorted.slice(sorted.length % 2 ? middle + 1 : middle);
+  const q1 = median(lower);
+  const q3 = median(upper);
+  if (q1 === null || q3 === null) return null;
+  const iqr = q3 - q1;
+  return { low: q1 - 1.5 * iqr, high: q3 + 1.5 * iqr };
+}
+
 export function calculateFairPrice(
   observations: PriceObservation[],
   asOf: Date
@@ -39,6 +55,10 @@ export function calculateFairPrice(
     .map(({ rate }) => rate);
   const overallMedian = median(rates);
   const recentMedian = median(recentRates);
+  const bounds = iqrBounds(rates);
+  const filteredRates = bounds
+    ? rates.filter((rate) => rate >= bounds.low && rate <= bounds.high)
+    : rates;
 
   let fairPrice: number | null = overallMedian;
   let method: FairPriceResult["method"] = observations.length ? "median" : "no-data";
@@ -55,6 +75,11 @@ export function calculateFairPrice(
     mean: rates.length ? rates.reduce((sum, value) => sum + value, 0) / rates.length : null,
     minimum: rates.length ? Math.min(...rates) : null,
     maximum: rates.length ? Math.max(...rates) : null,
+    iqrLow: bounds?.low ?? null,
+    iqrHigh: bounds?.high ?? null,
+    filteredMean: filteredRates.length
+      ? filteredRates.reduce((sum, value) => sum + value, 0) / filteredRates.length
+      : null,
     sampleSize: observations.length,
     supplierCount: new Set(observations.map(({ supplierId }) => supplierId)).size,
     method

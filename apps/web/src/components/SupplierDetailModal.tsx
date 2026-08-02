@@ -1,9 +1,16 @@
-import type { SupplierAnalytics } from "@quote-intelligence/domain";
+import type { SupplierPerformance } from "@quote-intelligence/domain";
 import { formatDate, formatNumber, zar } from "../format";
 import { useModalAccessibility } from "../use-modal-accessibility";
 
 interface SupplierDetailModalProps {
-  supplier: SupplierAnalytics;
+  supplier: Omit<
+    SupplierPerformance,
+    "averageRate" | "totalSpend" | "competitivenessIndex"
+  > & {
+    averageRate: number | null;
+    totalSpend?: number;
+    competitivenessIndex?: number | null;
+  };
   onClose: () => void;
   onDelete: (id: string, name: string) => void;
 }
@@ -67,8 +74,8 @@ export function SupplierDetailModal({
         </p>
 
         <div className="fair-price-hero" style={{ marginBottom: "20px" }}>
-          <span>Average Ex-VAT Quoted Rate</span>
-          <strong>{supplier.averageRate !== null ? zar.format(supplier.averageRate) : "—"}</strong>
+          <span>Total quoted spend</span>
+          <strong>{zar.format(supplier.totalSpend ?? 0)}</strong>
           <small>
             Active quotes on file:{" "}
             {supplier.firstQuoteDate && supplier.lastQuoteDate
@@ -87,8 +94,8 @@ export function SupplierDetailModal({
             <strong>{formatNumber(supplier.lineItemCount)}</strong>
           </div>
           <div>
-            <span>Market Standing</span>
-            <strong>{marketStanding}</strong>
+            <span>Competitiveness</span>
+            <strong>{supplier.competitivenessIndex?.toFixed(1) ?? "Pending"}</strong>
           </div>
         </div>
 

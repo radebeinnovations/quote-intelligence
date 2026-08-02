@@ -15,7 +15,8 @@ const items: CatalogSummary[] = [
     minPrice: 90,
     maxPrice: 110,
     fairPrice: 100,
-    lastUploadedAt: "2026-07-30T09:00:00.000Z"
+    lastUploadedAt: "2026-07-30T09:00:00.000Z",
+    variants: []
   },
   {
     id: "b",
@@ -28,7 +29,8 @@ const items: CatalogSummary[] = [
     minPrice: 1800,
     maxPrice: 2100,
     fairPrice: 1950,
-    lastUploadedAt: "2026-07-31T09:00:00.000Z"
+    lastUploadedAt: "2026-07-31T09:00:00.000Z",
+    variants: []
   },
   {
     id: "c",
@@ -41,7 +43,8 @@ const items: CatalogSummary[] = [
     minPrice: null,
     maxPrice: null,
     fairPrice: null,
-    lastUploadedAt: null
+    lastUploadedAt: null,
+    variants: []
   }
 ];
 
@@ -136,6 +139,6 @@ describe("catalog database resilience", () => {
       normalized_price_observations: [{ data: null, error: null }]
     });
 
-    await expect(new CatalogService(database).suppliers({})).resolves.toEqual([]);
+    await expect(new CatalogService(database).suppliersPerformance({})).resolves.toEqual([]);
   });
 });

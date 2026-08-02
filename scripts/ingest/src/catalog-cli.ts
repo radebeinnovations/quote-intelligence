@@ -15,10 +15,17 @@ interface CatalogRow {
   name: string;
 }
 
+const userId = process.env.INGEST_USER_ID;
+if (!userId) {
+  throw new Error(
+    "INGEST_USER_ID is required so catalog matching cannot modify data across tenants."
+  );
+}
 const database = createServiceDatabaseClient();
 
 async function upsertCatalog(): Promise<Map<string, string>> {
   const rows = catalogRules.map((item) => ({
+    ...(userId ? { user_id: userId } : {}),
     name: item.name,
     category: item.category,
     description: item.description,
@@ -29,7 +36,7 @@ async function upsertCatalog(): Promise<Map<string, string>> {
   }));
   const { data, error } = await database
     .from("catalog_items")
-    .upsert(rows, { onConflict: "name" })
+    .upsert(rows, { onConflict: "user_id,name" })
     .select("id,name");
   if (error) throw error;
   return new Map(((data ?? []) as CatalogRow[]).map(({ id, name }) => [name, id]));
@@ -43,9 +50,13 @@ function normalizePrice(line: LineRow, match: CatalogRule) {
 
 async function main() {
   const catalogIds = await upsertCatalog();
-  const { data, error } = await database
+  let lineQuery = database
     .from("quote_line_items")
     .select("id,description_raw,unit_raw,unit_rate_ex_vat");
+  lineQuery = userId
+    ? lineQuery.eq("user_id", userId)
+    : lineQuery.is("user_id", null);
+  const { data, error } = await lineQuery;
   if (error) throw error;
 
   let matched = 0;
@@ -55,6 +66,7 @@ async function main() {
     if (!match) {
       const { error: matchError } = await database.from("catalog_matches").upsert(
         {
+          ...(userId ? { user_id: userId } : {}),
           line_item_id: line.id,
           catalog_item_id: null,
           status: "unmatched",
@@ -74,6 +86,7 @@ async function main() {
     const normalized = normalizePrice(line, match);
     const { error: matchError } = await database.from("catalog_matches").upsert(
       {
+        ...(userId ? { user_id: userId } : {}),
         line_item_id: line.id,
         catalog_item_id: catalogItemId,
         status: "matched",
@@ -86,6 +99,7 @@ async function main() {
     if (matchError) throw matchError;
     const { error: normalizationError } = await database.from("price_normalizations").upsert(
       {
+        ...(userId ? { user_id: userId } : {}),
         line_item_id: line.id,
         canonical_rate_ex_vat: normalized.canonicalRate,
         canonical_basis: normalized.canonicalBasis,

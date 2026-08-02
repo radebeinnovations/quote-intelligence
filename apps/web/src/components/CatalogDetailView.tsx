@@ -5,13 +5,23 @@ import { api } from "../api";
 import { formatDate, zar } from "../format";
 import { PriceHistoryChart } from "./PriceHistoryChart";
 import { ReassignModal } from "./ReassignModal";
+import { downloadCsv } from "../csv";
 
-export function CatalogDetailView({ id, onBack }: { id: string; onBack: () => void }) {
+export function CatalogDetailView({
+  id,
+  initialVariantIds = [],
+  onBack
+}: {
+  id: string;
+  initialVariantIds?: string[];
+  onBack: () => void;
+}) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<LinkedLineItem | null>(null);
+  const [selectedVariantIds, setSelectedVariantIds] = useState<string[]>(initialVariantIds);
   const detail = useQuery({
-    queryKey: ["catalog", id],
-    queryFn: () => api.catalogDetail(id),
+    queryKey: ["catalog", id, { variantIds: selectedVariantIds }],
+    queryFn: () => api.catalogDetail(id, selectedVariantIds),
     enabled: Boolean(id)
   });
   const catalogOptions = useQuery({
@@ -32,6 +42,41 @@ export function CatalogDetailView({ id, onBack }: { id: string; onBack: () => vo
   if (!detail.data) return null;
   const { item, fairPrice, priceHistory, supplierComparison, linkedLineItems } = detail.data;
 
+  function exportLinkedLinesCsv() {
+    const header = [
+      "Supplier Description",
+      "Supplier Name",
+      "Quote Number",
+      "Quote Date",
+      "Raw Quantity",
+      "Raw Unit",
+      "Raw Rate (ZAR)",
+      "Tax Basis",
+      "Normalized Rate Ex-VAT (ZAR)",
+      "Normalized Unit",
+      "Comparable",
+      "Estimated Conversion"
+    ];
+    const rows = linkedLineItems.map((line) => [
+      line.description,
+      line.supplierName,
+      line.quoteNumber,
+      line.date,
+      line.quantity,
+      line.rawUnit,
+      line.rawRate,
+      line.taxBasis,
+      line.normalizedRate ?? "",
+      line.normalizedUnit ?? "",
+      line.comparable ? "Yes" : "No",
+      line.estimated ? "Yes" : "No"
+    ]);
+    downloadCsv(`${item.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-line-items.csv`, [
+      header,
+      ...rows
+    ]);
+  }
+
   return (
     <section className="detail-view">
       <button className="back-button" onClick={onBack}>← Catalog</button>
@@ -51,6 +96,50 @@ export function CatalogDetailView({ id, onBack }: { id: string; onBack: () => vo
         </div>
       </header>
 
+      {item.variants.length > 0 && (
+        <div className="variant-filter-panel panel">
+          <div>
+            <p className="eyebrow">Comparable variants</p>
+            <h3>Filter the benchmark</h3>
+            <p>
+              Select one or more variants to recalculate every metric and overlay
+              their supplier histories. Clear the filter for the consolidated view.
+            </p>
+          </div>
+          <div className="variant-filter-strip" aria-label="Filter analytics by variant">
+            <button
+              type="button"
+              className={selectedVariantIds.length === 0 ? "active" : ""}
+              aria-pressed={selectedVariantIds.length === 0}
+              onClick={() => setSelectedVariantIds([])}
+            >
+              All Sizes / Global Average
+            </button>
+            {item.variants.map((variant) => {
+              const active = selectedVariantIds.includes(variant.id);
+              return (
+                <button
+                  type="button"
+                  className={active ? "active" : ""}
+                  aria-pressed={active}
+                  key={variant.id}
+                  onClick={() =>
+                    setSelectedVariantIds((current) =>
+                      active
+                        ? current.filter((variantId) => variantId !== variant.id)
+                        : [...current, variant.id]
+                    )
+                  }
+                >
+                  {variant.label}
+                  <small>per {variant.pricingBasis}</small>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="explanation-grid">
         <article className="panel formula-panel">
           <div className="panel-heading">
@@ -67,12 +156,16 @@ export function CatalogDetailView({ id, onBack }: { id: string; onBack: () => vo
             <Metric label="Overall median" value={moneyOrDash(fairPrice.overallMedian)} />
             <Metric label="Recent median" value={moneyOrDash(fairPrice.recentMedian)} />
             <Metric label="Mean rate" value={moneyOrDash(fairPrice.mean)} />
+            <Metric label="IQR-filtered mean" value={moneyOrDash(fairPrice.filteredMean)} />
             <Metric label="Observations" value={String(fairPrice.sampleSize)} />
             <Metric label="Suppliers" value={String(fairPrice.supplierCount)} />
           </div>
           <p className="exclusion-note">
             {fairPrice.excludedCount} non-comparable or invalid observation(s) excluded.
             {" "}{fairPrice.outlierCount} statistical outlier(s) highlighted but retained in the median.
+            {fairPrice.iqrLow !== null && fairPrice.iqrHigh !== null && (
+              <> IQR fence: {zar.format(fairPrice.iqrLow)}–{zar.format(fairPrice.iqrHigh)}.</>
+            )}
           </p>
         </article>
         <article className="panel mini-observations">
@@ -94,7 +187,7 @@ export function CatalogDetailView({ id, onBack }: { id: string; onBack: () => vo
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Market movement</p>
-            <h3>Price history by supplier</h3>
+            <h3>Price history by supplier &amp; variant</h3>
           </div>
           <span className="panel-note">Normalized ex-VAT rates</span>
         </div>
@@ -146,7 +239,16 @@ export function CatalogDetailView({ id, onBack }: { id: string; onBack: () => vo
             <p className="eyebrow">Match transparency</p>
             <h3>Linked supplier line items</h3>
           </div>
-          <span className="panel-note">{linkedLineItems.length} mappings</span>
+          <div className="panel-actions">
+            <span className="panel-note">{linkedLineItems.length} mappings</span>
+            <button
+              className="button secondary compact"
+              onClick={exportLinkedLinesCsv}
+              disabled={!linkedLineItems.length}
+            >
+              ↓ Export CSV
+            </button>
+          </div>
         </div>
         <div className="linked-list">
           {linkedLineItems.map((line) => (
@@ -177,15 +279,14 @@ export function CatalogDetailView({ id, onBack }: { id: string; onBack: () => vo
         <ReassignModal
           lineItem={editing}
           catalogItems={(catalogOptions.data?.items ?? []).filter(({ id: optionId }) => optionId !== id)}
-          catalogOptionsError={catalogOptions.isError ? catalogOptions.error.message : undefined}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
             void queryClient.invalidateQueries({ queryKey: ["catalog"] });
-            void queryClient.invalidateQueries({ queryKey: ["catalog", id] });
-            void queryClient.invalidateQueries({ queryKey: ["stats"] });
-            void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
-            void queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] });
+            void queryClient.invalidateQueries({
+              predicate: ({ queryKey }) =>
+                queryKey[0] === "catalog" && queryKey[1] === id
+            });
           }}
         />
       )}

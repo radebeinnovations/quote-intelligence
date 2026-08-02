@@ -4,7 +4,7 @@ import type {
   PaginatedCatalogResponse,
   ReassignLineItemResult,
   StatsResponse,
-  SupplierAnalytics,
+  SupplierPerformance,
   UnmatchedLineItemsResponse,
   UploadQuoteResponse
 } from "@quote-intelligence/domain";
@@ -29,7 +29,8 @@ const catalogPage: PaginatedCatalogResponse = {
       minPrice: 95,
       maxPrice: 110,
       fairPrice: 102.5,
-      lastUploadedAt: "2026-07-31T09:00:00.000Z"
+      lastUploadedAt: "2026-07-31T09:00:00.000Z",
+      variants: []
     }
   ],
   page: 1,
@@ -46,7 +47,8 @@ const detailResponse: CatalogDetailResponse = {
     category: "Staffing",
     primaryUnit: "person-hour",
     pricingBasis: "person-hour",
-    attributes: {}
+    attributes: {},
+    variants: []
   },
   priceHistory: [
     {
@@ -59,7 +61,9 @@ const detailResponse: CatalogDetailResponse = {
       total: 920,
       quoteNumber: "CC-100",
       quoteId: "44444444-4444-4444-8444-444444444444",
-      estimated: false
+      estimated: false,
+      variantId: null,
+      variantLabel: "Base profile"
     }
   ],
   supplierComparison: [
@@ -86,6 +90,9 @@ const detailResponse: CatalogDetailResponse = {
     confidence: 0.175,
     excludedCount: 0,
     outlierCount: 0,
+    iqrLow: null,
+    iqrHigh: null,
+    filteredMean: 100,
     formula: "Median of comparable, current, arithmetically valid ex-VAT rates",
     observations: [
       {
@@ -139,7 +146,7 @@ const reassignResponse: ReassignLineItemResult = {
   canonicalBasis: "person-hour"
 };
 
-const suppliersResponse: SupplierAnalytics[] = [];
+const suppliersResponse: SupplierPerformance[] = [];
 const ingestionAuditResponse: IngestionRunAudit[] = [];
 const uploadResponse: UploadQuoteResponse = {
   idempotent: false,
@@ -183,7 +190,8 @@ describe("Quote Intelligence API", () => {
       unmatched: vi.fn(async () => unmatchedResponse),
       reassign: vi.fn(async () => ({ status: "ok" as const, result: reassignResponse })),
       stats: vi.fn(async () => statsResponse),
-      suppliers: vi.fn(async () => suppliersResponse),
+      suppliersPerformance: vi.fn(async () => suppliersResponse),
+      supplierProfile: vi.fn(async () => null),
       ingestionAudit: vi.fn(async () => ingestionAuditResponse),
       createSupplier: vi.fn(async () => ({ id: "55555555-5555-4555-8555-555555555555", name: "New Supplier" })),
       createCatalogItem: vi.fn(async () => catalogPage.items[0]!),
@@ -207,9 +215,11 @@ describe("Quote Intelligence API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(catalogPage);
     expect(service.list).toHaveBeenCalledWith({
-      query: "wait",
+      q: "wait",
       page: 1,
-      pageSize: 50
+      pageSize: 50,
+      sortBy: "name",
+      sortOrder: "asc"
     });
   });
 
@@ -221,7 +231,7 @@ describe("Quote Intelligence API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(detailResponse);
-    expect(service.detail).toHaveBeenCalledWith(catalogItemId);
+    expect(service.detail).toHaveBeenCalledWith(catalogItemId, { variantIds: [] });
   });
 
   it("rejects an invalid UUID route parameter with a structured 400 response", async () => {
@@ -326,7 +336,7 @@ describe("Quote Intelligence API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(suppliersResponse);
-    expect(service.suppliers).toHaveBeenCalledWith({
+    expect(service.suppliersPerformance).toHaveBeenCalledWith({
       from: "2026-01-01",
       to: "2026-07-30"
     });

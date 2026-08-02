@@ -1,16 +1,43 @@
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
-import { createServiceDatabaseClient } from "@quote-intelligence/database";
 import {
+  createAuthenticatedDatabaseClient,
+  createServiceDatabaseClient
+} from "@quote-intelligence/database";
+import {
+  batchQuoteUploadSchema,
+  batchQuoteUploadResultSchema,
+  authMeResponseSchema,
   createCatalogItemSchema,
   createSupplierSchema,
-  reassignLineItemSchema
+  createdSupplierResponseSchema,
+  catalogDetailResponseSchema,
+  catalogDetailQuerySchema,
+  ingestionAuditResponseSchema,
+  catalogListQuerySchema,
+  catalogSummaryResponseSchema,
+  paginatedCatalogResponseSchema,
+  reassignLineItemResultSchema,
+  reassignLineItemSchema,
+  statsResponseSchema,
+  supplierPerformanceResponseSchema,
+  supplierProfileResponseSchema,
+  unmatchedLineItemsResponseSchema,
+  healthResponseSchema,
+  mutationSuccessResponseSchema,
+  supplierListQuerySchema,
+  uploadQuoteResponseSchema
 } from "@quote-intelligence/domain";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
-import Fastify from "fastify";
+import Fastify, {
+  type FastifyReply,
+  type FastifyRequest
+} from "fastify";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { z } from "zod";
+import { BatchIngestionService } from "./batch-ingestion-service";
 import { CatalogService } from "./catalog-service";
 import { describeUnknownError } from "./error-utils";
 import {
@@ -24,19 +51,6 @@ dotenv.config({
   path: resolve(fileURLToPath(new URL("../../../", import.meta.url)), ".env")
 });
 
-import { copyFileSync, existsSync } from "node:fs";
-
-try {
-  const rootDir = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
-  const ttlPdfSource = resolve(rootDir, "candidate-pack/sample-quotes/TTL-Q35.pdf");
-  const ttlPdfTarget = resolve(rootDir, "1_TON_TRUCKING_QUOTE_TO_UPLOAD.pdf");
-  if (existsSync(ttlPdfSource)) {
-    copyFileSync(ttlPdfSource, ttlPdfTarget);
-  }
-} catch (e) {
-  // Ignore fallback file copy error
-}
-
 export type CatalogApiService = Pick<
   CatalogService,
   | "list"
@@ -44,7 +58,8 @@ export type CatalogApiService = Pick<
   | "unmatched"
   | "reassign"
   | "stats"
-  | "suppliers"
+  | "suppliersPerformance"
+  | "supplierProfile"
   | "ingestionAudit"
   | "createSupplier"
   | "createCatalogItem"
@@ -59,35 +74,19 @@ interface BuildServerOptions {
   uploadLimitBytes?: number;
 }
 
-const statusLabels: Record<number, string> = {
-  400: "Bad Request",
-  404: "Not Found",
-  409: "Conflict",
-  413: "Payload Too Large",
-  415: "Unsupported Media Type",
-  422: "Unprocessable Entity",
-  500: "Internal Server Error",
-  503: "Service Unavailable"
-};
-
-function notFound(reply: { status(code: number): { send(body: unknown): unknown } }, message: string) {
-  return reply.status(404).send({ error: "Not Found", message });
-}
-
-function requireJsonContentType(request: {
-  headers: { "content-type"?: string | undefined };
-}): void {
-  const mediaType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
-  if (!mediaType || !/^application\/(?:[\w.-]+\+)?json$/.test(mediaType)) {
-    throw new UploadIngestionError("Expected an application/json request body.", 415);
-  }
+interface RequestServices {
+  catalog: CatalogApiService;
+  database: SupabaseClient | null;
+  userId: string;
+  email: string | null;
 }
 
 export async function buildServer(options: BuildServerOptions = {}) {
-  const app = Fastify({ logger: options.logger ?? true });
-  const catalog =
-    options.catalog ?? new CatalogService(createServiceDatabaseClient());
-  let uploadIngestion = options.uploadIngestion;
+  const app = Fastify({
+    logger: options.logger ?? true,
+    bodyLimit: 100 * 1024 * 1024
+  });
+  const authAdmin = options.catalog ? null : createServiceDatabaseClient();
   const configuredOrigins = [
     "http://localhost:5173",
     "http://localhost:5174",
@@ -97,9 +96,11 @@ export async function buildServer(options: BuildServerOptions = {}) {
     .filter((origin, index, origins) => Boolean(origin) && origins.indexOf(origin) === index);
 
   await app.register(cors, {
-    origin(origin, callback) {
-      callback(null, !origin || configuredOrigins.includes(origin));
-    }
+    origin:
+      configuredOrigins.length === 1
+        ? configuredOrigins[0]!
+        : configuredOrigins,
+    allowedHeaders: ["Content-Type", "Authorization"]
   });
   await app.register(multipart, {
     limits: {
@@ -118,30 +119,97 @@ export async function buildServer(options: BuildServerOptions = {}) {
         issues: error.issues
       });
     }
-    const statusCode = error instanceof UploadIngestionError
-      ? error.statusCode
-      : typeof error === "object" && error !== null &&
-          "statusCode" in error && typeof error.statusCode === "number"
+    const statusCode =
+      error instanceof UploadIngestionError
         ? error.statusCode
-        : 500;
+        : typeof error === "object" && error !== null &&
+            "statusCode" in error && typeof error.statusCode === "number"
+          ? error.statusCode
+          : 500;
+    const labels: Record<number, string> = {
+      400: "Bad Request",
+      404: "Not Found",
+      409: "Conflict",
+      413: "Payload Too Large",
+      415: "Unsupported Media Type",
+      422: "Unprocessable Entity",
+      500: "Internal Server Error",
+      503: "Service Unavailable"
+    };
     return reply.status(statusCode).send({
-      error: statusLabels[statusCode] ?? "Request Error",
+      error: labels[statusCode] ?? "Request Error",
       message: describeUnknownError(error)
     });
   });
 
-  app.get("/api/health", async () => ({
-    status: "ok",
-    service: "quote-intelligence-api"
-  }));
+  function requireJsonContentType(request: FastifyRequest): void {
+    const mediaType = request.headers["content-type"]
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase();
+    if (!mediaType || !/^application\/(?:[\w.-]+\+)?json$/.test(mediaType)) {
+      throw new UploadIngestionError(
+        "Expected an application/json request body.",
+        415
+      );
+    }
+  }
+
+  async function servicesFor(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<RequestServices | null> {
+    if (options.catalog) {
+      return {
+        catalog: options.catalog,
+        database: null,
+        userId: "00000000-0000-4000-8000-000000000000",
+        email: "test@example.com"
+      };
+    }
+
+    const authorization = request.headers.authorization;
+    const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!token) {
+      await reply.status(401).send({ error: "Authentication is required." });
+      return null;
+    }
+    const { data, error } = await authAdmin!.auth.getUser(token);
+    if (error || !data.user) {
+      await reply.status(401).send({ error: "The access token is invalid or expired." });
+      return null;
+    }
+
+    const database = createAuthenticatedDatabaseClient(token);
+    return {
+      catalog: new CatalogService(database, data.user.id),
+      database,
+      userId: data.user.id,
+      email: data.user.email ?? null
+    };
+  }
+
+  app.get("/api/health", async () =>
+    healthResponseSchema.parse({
+      status: "ok",
+      service: "quote-intelligence-api"
+    })
+  );
+
+  app.get("/api/auth/me", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    return authMeResponseSchema.parse({ id: services.userId, email: services.email });
+  });
 
   app.post("/api/ingest/upload", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
     if (!request.isMultipart()) {
       throw new UploadIngestionError("Expected a multipart/form-data upload.", 415);
     }
     const file = await request.file();
     if (!file) throw new UploadIngestionError("Attach one PDF or XLSX quote file.", 400);
-
     const filename = file.filename.split(/[\\/]/).pop()?.trim() ?? "";
     const extension = filename.match(/\.(pdf|xlsx)$/i)?.[0].toLowerCase() ?? "";
     if (extension !== ".pdf" && extension !== ".xlsx") {
@@ -153,108 +221,166 @@ export async function buildServer(options: BuildServerOptions = {}) {
     if (extension === ".pdf" && contents.subarray(0, 5).toString("ascii") !== "%PDF-") {
       throw new UploadIngestionError("The uploaded file is not a valid PDF document.", 415);
     }
-    if (
-      extension === ".xlsx" &&
-      !(contents[0] === 0x50 && contents[1] === 0x4b)
-    ) {
+    if (extension === ".xlsx" && !(contents[0] === 0x50 && contents[1] === 0x4b)) {
       throw new UploadIngestionError("The uploaded file is not a valid XLSX workbook.", 415);
     }
-
-    uploadIngestion ??= new UploadIngestionService();
-    let result;
+    const ingestion =
+      options.uploadIngestion ??
+      (services.database
+        ? new UploadIngestionService(services.database, services.userId)
+        : null);
+    if (!ingestion) {
+      return reply.status(501).send({ error: "Upload service is unavailable in test mode." });
+    }
     try {
-      result = await uploadIngestion.ingest({
+      const result = await ingestion.ingest({
         filename,
         fileType: extension.slice(1) as UploadFileType,
         contents
       });
+      return reply
+        .status(result.idempotent ? 200 : 201)
+        .send(uploadQuoteResponseSchema.parse(result));
     } finally {
       contents.fill(0);
     }
-    return reply.status(result.idempotent ? 200 : 201).send(result);
   });
 
-  app.get("/api/catalog", async (request) => {
-    const query = z
-      .object({
-        q: z.string().trim().max(100).default(""),
-        page: z.coerce.number().int().positive().default(1),
-        pageSize: z.coerce.number().int().min(1).max(100).default(50)
-      })
-      .parse(request.query);
-    return catalog.list({ query: query.q, page: query.page, pageSize: query.pageSize });
+  app.get("/api/catalog", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    return paginatedCatalogResponseSchema.parse(
+      await services.catalog.list(catalogListQuerySchema.parse(request.query))
+    );
   });
 
   app.post("/api/catalog", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
     requireJsonContentType(request);
-    const input = createCatalogItemSchema.parse(request.body);
-    const item = await catalog.createCatalogItem(input);
-    return reply.status(201).send(item);
+    const item = await services.catalog.createCatalogItem(
+      createCatalogItemSchema.parse(request.body)
+    );
+    return reply.status(201).send(catalogSummaryResponseSchema.parse(item));
   });
 
   app.get("/api/catalog/:id", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const detail = await catalog.detail(id);
-    if (!detail) return notFound(reply, "Catalog item not found.");
-    return detail;
+    const input = catalogDetailQuerySchema.parse(request.query);
+    const detail = await services.catalog.detail(id, input);
+    if (!detail) {
+      return reply.status(404).send({ error: "Not Found", message: "Catalog item not found." });
+    }
+    return catalogDetailResponseSchema.parse(detail);
   });
 
   app.delete("/api/catalog/:id", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const outcome = await catalog.deleteCatalogItem(id);
-    if (!outcome.success) return notFound(reply, "Catalog item not found.");
-    return outcome;
+    const outcome = await services.catalog.deleteCatalogItem(id);
+    if (!outcome.success) return reply.status(404).send({ error: "Not Found", message: "Catalog item not found." });
+    return mutationSuccessResponseSchema.parse(outcome);
   });
 
-  app.get("/api/line-items/unmatched", async () => catalog.unmatched());
+  app.get("/api/line-items/unmatched", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    return unmatchedLineItemsResponseSchema.parse(
+      await services.catalog.unmatched()
+    );
+  });
 
   app.post("/api/line-items/:id/reassign", async (request, reply) => {
-    requireJsonContentType(request);
+    const services = await servicesFor(request, reply);
+    if (!services) return;
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const input = reassignLineItemSchema.parse(request.body);
-    const outcome = await catalog.reassign(id, input);
+    const outcome = await services.catalog.reassign(id, input);
     if (outcome.status === "line-item-not-found") {
-      return notFound(reply, "Line item not found.");
+      return reply.status(404).send({ error: "Not Found", message: "Line item not found." });
     }
     if (outcome.status === "target-not-found") {
-      return notFound(reply, "Target catalog item not found.");
+      return reply.status(404).send({ error: "Not Found", message: "Target catalog item not found." });
     }
-    return reply.status(201).send(outcome.result);
+    return reply.status(201).send(reassignLineItemResultSchema.parse(outcome.result));
   });
 
-  app.get("/api/stats", async () => catalog.stats());
+  app.get("/api/stats", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    return statsResponseSchema.parse(await services.catalog.stats());
+  });
 
-  app.get("/api/suppliers", async (request) => {
-    const query = z
-      .object({
-        from: z.string().date().optional(),
-        to: z.string().date().optional()
-      })
-      .refine(({ from, to }) => !from || !to || from <= to, {
-        message: "The start date must be on or before the end date."
-      })
-      .parse(request.query);
-    return catalog.suppliers({
-      ...(query.from ? { from: query.from } : {}),
-      ...(query.to ? { to: query.to } : {})
-    });
+  app.get("/api/suppliers", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    return supplierPerformanceResponseSchema.parse(
+      await services.catalog.suppliersPerformance(
+        supplierListQuerySchema.parse(request.query)
+      )
+    );
   });
 
   app.post("/api/suppliers", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
     requireJsonContentType(request);
-    const input = createSupplierSchema.parse(request.body);
-    const supplier = await catalog.createSupplier(input);
-    return reply.status(201).send(supplier);
+    const supplier = await services.catalog.createSupplier(
+      createSupplierSchema.parse(request.body)
+    );
+    return reply.status(201).send(createdSupplierResponseSchema.parse(supplier));
+  });
+
+  app.get("/api/suppliers/:id", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const profile = await services.catalog.supplierProfile(id);
+    if (!profile) return reply.status(404).send({ error: "Not Found", message: "Supplier not found." });
+    return supplierProfileResponseSchema.parse(profile);
   });
 
   app.delete("/api/suppliers/:id", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const outcome = await catalog.deleteSupplier(id);
-    if (!outcome.success) return notFound(reply, "Supplier not found.");
-    return outcome;
+    const outcome = await services.catalog.deleteSupplier(id);
+    if (!outcome.success) return reply.status(404).send({ error: "Not Found", message: "Supplier not found." });
+    return mutationSuccessResponseSchema.parse(outcome);
   });
 
-  app.get("/api/ingestion-runs", async () => catalog.ingestionAudit());
+  app.get("/api/ingestion-audit", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    return ingestionAuditResponseSchema.parse(
+      await services.catalog.ingestionAudit()
+    );
+  });
+
+  app.get("/api/ingestion-runs", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    return ingestionAuditResponseSchema.parse(await services.catalog.ingestionAudit());
+  });
+
+  app.post("/api/uploads/batch", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    if (!services.database) {
+      return reply.status(501).send({ error: "Upload service is unavailable in test mode." });
+    }
+    requireJsonContentType(request);
+    const input = batchQuoteUploadSchema.parse(request.body);
+    const ingestion = new BatchIngestionService(
+      services.database,
+      services.userId
+    );
+    const result = await ingestion.ingest(input);
+    return reply.status(202).send(batchQuoteUploadResultSchema.parse(result));
+  });
 
   return app;
 }

@@ -27,3 +27,34 @@ export function createServiceDatabaseClient() {
     }
   });
 }
+
+export function createAuthenticatedDatabaseClient(accessToken: string) {
+  const url = process.env.SUPABASE_URL?.trim();
+  const anonKey = process.env.SUPABASE_ANON_KEY?.trim();
+
+  if (!url || !anonKey) {
+    throw new Error(
+      "SUPABASE_URL and SUPABASE_ANON_KEY are required for authenticated database access."
+    );
+  }
+  if (!accessToken.trim()) {
+    throw new Error("An authenticated access token is required.");
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw new Error("SUPABASE_URL must be a valid absolute URL.");
+  }
+
+  return createClient(parsedUrl.toString(), anonKey, {
+    global: {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    },
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  });
+}

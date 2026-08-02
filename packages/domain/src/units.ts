@@ -28,7 +28,7 @@ export function normalizeStaffingRate(
   rateExVat: number,
   sourceUnit: string
 ): UnitConversionResult {
-  const unit = sourceUnit.trim().toLowerCase();
+  const unit = (sourceUnit || "").trim().toLowerCase();
   if (unit === "hour") {
     return {
       canonicalRate: rateExVat,
@@ -95,8 +95,8 @@ export function normalizeCatalogRate(
     };
   }
 
-  const unit = sourceUnit.trim().toLowerCase();
-  const basis = canonicalBasis.trim().toLowerCase();
+  const unit = (sourceUnit || "").trim().toLowerCase();
+  const basis = (canonicalBasis || "").trim().toLowerCase();
   const compatibleUnits: Record<string, string[]> = {
     "item-day": ["each", "unit-day", "day"],
     item: ["each", "unit"],

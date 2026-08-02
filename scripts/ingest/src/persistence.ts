@@ -45,15 +45,26 @@ function describeError(error: unknown): string {
 
 export class IngestionRepository {
   private readonly database: SupabaseClient;
+  private readonly userId: string;
 
-  constructor(database = createServiceDatabaseClient()) {
+  constructor(
+    database = createServiceDatabaseClient(),
+    userId = process.env.INGEST_USER_ID
+  ) {
+    if (!userId) {
+      throw new Error(
+        "INGEST_USER_ID is required so corpus ingestion cannot bypass tenant ownership."
+      );
+    }
     this.database = database;
+    this.userId = userId;
   }
 
   async startRun(documentCount: number): Promise<string> {
     const { data, error } = await this.database
       .from("ingestion_runs")
       .insert({
+        ...(this.userId ? { user_id: this.userId } : {}),
         parser_version: "0.1.0",
         matching_version: "0.1.0",
         document_count: documentCount
@@ -87,12 +98,15 @@ export class IngestionRepository {
   async findParsedDocument(
     sha256: string
   ): Promise<{ document: ExtractedDocument; warnings: string[] } | null> {
-    const { data, error } = await this.database
+    let query = this.database
       .from("source_documents")
       .select("raw_extraction, extraction_warnings")
       .eq("sha256", sha256)
-      .eq("extraction_status", "parsed")
-      .maybeSingle<StoredExtraction>();
+      .eq("extraction_status", "parsed");
+    query = this.userId
+      ? query.eq("user_id", this.userId)
+      : query.is("user_id", null);
+    const { data, error } = await query.maybeSingle<StoredExtraction>();
     if (error) throw error;
     if (!data?.raw_extraction) return null;
 
@@ -134,6 +148,7 @@ export class IngestionRepository {
       .from("source_documents")
       .upsert(
         {
+          ...(this.userId ? { user_id: this.userId } : {}),
           ingestion_run_id: input.ingestionRunId,
           filename: input.filename,
           file_type: input.fileType,
@@ -142,7 +157,7 @@ export class IngestionRepository {
           raw_extraction: input.document,
           extraction_warnings: input.warnings
         },
-        { onConflict: "sha256" }
+        { onConflict: "user_id,sha256" }
       )
       .select("id")
       .single<RecordWithId>();
@@ -162,6 +177,7 @@ export class IngestionRepository {
         .from("suppliers")
         .upsert(
           {
+            ...(this.userId ? { user_id: this.userId } : {}),
             canonical_name: canonicalName,
             display_name: supplier.name,
             vat_number: supplier.vatNumber,
@@ -170,7 +186,7 @@ export class IngestionRepository {
             address: supplier.address ?? null,
             active: true
           },
-          { onConflict: "vat_number" }
+          { onConflict: "user_id,vat_number" }
         )
         .select("id")
         .single<RecordWithId>();
@@ -178,11 +194,15 @@ export class IngestionRepository {
       return requireData(data, "Upserting a supplier").id;
     }
 
-    const { data: existing, error: selectError } = await this.database
+    let existingQuery = this.database
       .from("suppliers")
       .select("id")
-      .eq("canonical_name", canonicalName)
-      .maybeSingle<RecordWithId>();
+      .eq("canonical_name", canonicalName);
+    existingQuery = this.userId
+      ? existingQuery.eq("user_id", this.userId)
+      : existingQuery.is("user_id", null);
+    const { data: existing, error: selectError } =
+      await existingQuery.maybeSingle<RecordWithId>();
     if (selectError) throw selectError;
     if (existing) {
       const { error: updateError } = await this.database
@@ -202,6 +222,7 @@ export class IngestionRepository {
     const { data, error } = await this.database
       .from("suppliers")
       .insert({
+        ...(this.userId ? { user_id: this.userId } : {}),
         canonical_name: canonicalName,
         display_name: supplier.name,
         email: supplier.email ?? null,
@@ -229,6 +250,7 @@ export class IngestionRepository {
       .from("quotes")
       .upsert(
         {
+          ...(this.userId ? { user_id: this.userId } : {}),
           source_document_id: sourceDocumentId,
           supplier_id: supplierId,
           quote_number: baseQuoteNumber,
@@ -307,6 +329,7 @@ export class IngestionRepository {
         document.quote.vatRate
       );
       return {
+        ...(this.userId ? { user_id: this.userId } : {}),
         quote_id: quoteId,
         source_row: item.sourceRow ?? null,
         description_raw: item.description,

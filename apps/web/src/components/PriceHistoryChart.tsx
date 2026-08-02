@@ -14,12 +14,12 @@ import { formatDate, zar } from "../format";
 const palette = ["#ff7a45", "#47b39c", "#7c73e6", "#d8a03d", "#e65f8e", "#4f88d4"];
 
 export function PriceHistoryChart({ points }: { points: PriceHistoryPoint[] }) {
-  const suppliers = [...new Set(points.map(({ supplierName }) => supplierName))];
+  const series = [...new Set(points.map(seriesName))];
   const dates = [...new Set(points.map(({ date }) => date))].sort();
   const data = dates.map((date) => {
     const row: Record<string, string | number> = { date };
     for (const point of points.filter((item) => item.date === date)) {
-      row[point.supplierName] = point.rate;
+      row[seriesName(point)] = point.rate;
     }
     return row;
   });
@@ -52,15 +52,19 @@ export function PriceHistoryChart({ points }: { points: PriceHistoryPoint[] }) {
             contentStyle={{
               background: "var(--panel-solid)",
               border: "1px solid var(--line)",
-              borderRadius: 12
+              borderRadius: 12,
+              color: "var(--text)",
+              boxShadow: "var(--panel-shadow)"
             }}
+            itemStyle={{ color: "var(--text)" }}
+            labelStyle={{ color: "var(--muted)" }}
           />
           <Legend />
-          {suppliers.map((supplier, index) => (
+          {series.map((name, index) => (
             <Line
-              key={supplier}
+              key={name}
               type="monotone"
-              dataKey={supplier}
+              dataKey={name}
               stroke={palette[index % palette.length]}
               strokeWidth={2.5}
               dot={{ r: 4, strokeWidth: 2 }}
@@ -71,5 +75,11 @@ export function PriceHistoryChart({ points }: { points: PriceHistoryPoint[] }) {
       </ResponsiveContainer>
     </div>
   );
+}
+
+function seriesName(point: PriceHistoryPoint): string {
+  return point.variantLabel
+    ? `${point.supplierName} · ${point.variantLabel}`
+    : point.supplierName;
 }
 

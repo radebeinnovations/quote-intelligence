@@ -1,74 +1,52 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CatalogSummary } from "@quote-intelligence/domain";
-import { useEffect, useMemo, useState } from "react";
+import {
+  CATALOG_CATEGORIES,
+  type CatalogCategory,
+  type CatalogSortBy,
+  type SortOrder
+} from "@quote-intelligence/domain";
+import { useEffect, useState } from "react";
 import { api } from "../api";
+import { downloadCsv } from "../csv";
+import {
+  resolveDateRange,
+  type DateRangePreset
+} from "../date-range";
 import { formatDate, formatNumber, zar } from "../format";
 import { CreateCatalogItemModal } from "./CreateCatalogItemModal";
+import { DateRangeSelector } from "./DateRangeSelector";
 
-export type CatalogSortOption =
-  | "name-asc"
-  | "name-desc"
-  | "price-asc"
-  | "price-desc"
-  | "uploaded-desc"
-  | "suppliers-desc"
-  | "lines-desc";
-
-const catalogSortOptions: Array<{ value: CatalogSortOption; label: string }> = [
-  { value: "name-asc", label: "Name: A–Z" },
-  { value: "name-desc", label: "Name: Z–A" },
-  { value: "price-asc", label: "Fair price: Low–High" },
-  { value: "price-desc", label: "Fair price: High–Low" },
-  { value: "uploaded-desc", label: "Last uploaded" },
-  { value: "suppliers-desc", label: "Most suppliers" },
-  { value: "lines-desc", label: "Most linked lines" }
+const sortOptions: Array<{
+  value: `${CatalogSortBy}:${SortOrder}`;
+  label: string;
+}> = [
+  { value: "name:asc", label: "Name: A–Z" },
+  { value: "name:desc", label: "Name: Z–A" },
+  { value: "fairPrice:asc", label: "Fair price: Low–High" },
+  { value: "fairPrice:desc", label: "Fair price: High–Low" },
+  { value: "supplierCount:desc", label: "Suppliers: Most–Least" },
+  { value: "supplierCount:asc", label: "Suppliers: Least–Most" }
 ];
 
-const nameCollator = new Intl.Collator(undefined, {
-  numeric: true,
-  sensitivity: "base"
-});
-
-export function sortCatalogItems(
-  items: CatalogSummary[],
-  sort: CatalogSortOption
-): CatalogSummary[] {
-  return [...items].sort((left, right) => {
-    const byName = nameCollator.compare(left.name, right.name);
-    if (sort === "name-asc") return byName;
-    if (sort === "name-desc") return -byName;
-    if (sort === "suppliers-desc") {
-      return right.supplierCount - left.supplierCount || byName;
-    }
-    if (sort === "lines-desc") {
-      return right.linkedLineItemCount - left.linkedLineItemCount || byName;
-    }
-    if (sort === "uploaded-desc") {
-      const leftTimestamp = left.lastUploadedAt ? Date.parse(left.lastUploadedAt) : null;
-      const rightTimestamp = right.lastUploadedAt ? Date.parse(right.lastUploadedAt) : null;
-      const leftDate = leftTimestamp !== null && Number.isFinite(leftTimestamp)
-        ? leftTimestamp
-        : null;
-      const rightDate = rightTimestamp !== null && Number.isFinite(rightTimestamp)
-        ? rightTimestamp
-        : null;
-      if (leftDate === null) return rightDate === null ? byName : 1;
-      if (rightDate === null) return -1;
-      return rightDate - leftDate || byName;
-    }
-
-    if (left.fairPrice === null) return right.fairPrice === null ? byName : 1;
-    if (right.fairPrice === null) return -1;
-    const priceDifference = left.fairPrice - right.fairPrice;
-    return (sort === "price-asc" ? priceDifference : -priceDifference) || byName;
-  });
+function categoryLabel(category: CatalogCategory): string {
+  return category === "Equipment hire" ? "Equipment Hire" : category;
 }
 
-export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void }) {
+export function CatalogBrowser({
+  onSelect,
+  onUpload = () => undefined
+}: {
+  onSelect: (id: string, variantIds?: string[]) => void;
+  onUpload?: () => void;
+}) {
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<CatalogSortOption>("name-asc");
+  const [category, setCategory] = useState<CatalogCategory | "">("");
+  const [sortBy, setSortBy] = useState<CatalogSortBy>("name");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
+  const [dateRangePreset, setDateRangePreset] =
+    useState<DateRangePreset>("all-time");
   const [showCreateModal, setShowCreateModal] = useState(false);
 
   useEffect(() => {
@@ -77,28 +55,73 @@ export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void })
   }, [input]);
 
   const catalog = useQuery({
-    queryKey: ["catalog", query],
-    queryFn: () => api.catalog(query, 1, 50)
+    queryKey: [
+      "catalog",
+      query,
+      category,
+      sortBy,
+      sortOrder,
+      dateRangePreset
+    ],
+    queryFn: () =>
+      api.catalog(query, 1, 50, {
+        ...(category ? { category } : {}),
+        sortBy,
+        sortOrder,
+        ...resolveDateRange(dateRangePreset)
+      })
   });
-  const sortedItems = useMemo(
-    () => sortCatalogItems(catalog.data?.items ?? [], sort),
-    [catalog.data?.items, sort]
-  );
 
-  async function handleDelete(event: React.MouseEvent, itemId: string, itemName: string) {
-    event.stopPropagation();
-    if (window.confirm(
+  function exportCsv() {
+    if (!catalog.data?.items) return;
+    const header = [
+      "Service Name",
+      "Category",
+      "Primary Unit",
+      "Fair Price Ex-VAT (ZAR)",
+      "Min Rate Ex-VAT",
+      "Max Rate Ex-VAT",
+      "Suppliers Count",
+      "Linked Lines Count"
+    ];
+    const rows = catalog.data.items.map((item) => [
+      item.name,
+      item.category,
+      item.primaryUnit,
+      item.fairPrice ?? "",
+      item.minPrice ?? "",
+      item.maxPrice ?? "",
+      item.supplierCount,
+      item.linkedLineItemCount
+    ]);
+    downloadCsv("procurement-catalog-benchmark.csv", [header, ...rows]);
+  }
+
+  function selectSort(value: string) {
+    const option = sortOptions.find((item) => item.value === value);
+    if (!option) return;
+    const [nextSortBy, nextSortOrder] = option.value.split(":") as [
+      CatalogSortBy,
+      SortOrder
+    ];
+    setSortBy(nextSortBy);
+    setSortOrder(nextSortOrder);
+  }
+
+  async function handleDelete(itemId: string, itemName: string) {
+    if (!window.confirm(
       `Deactivate "${itemName}"? Historical price observations remain in the audit trail.`
-    )) {
-      try {
-        await api.deleteCatalogItem(itemId);
-        void queryClient.invalidateQueries({ queryKey: ["catalog"] });
-        void queryClient.invalidateQueries({ queryKey: ["stats"] });
-        void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
-        void queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] });
-      } catch (err) {
-        alert(err instanceof Error ? err.message : "Failed to delete service.");
-      }
+    )) return;
+    try {
+      await api.deleteCatalogItem(itemId);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["catalog"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats"] }),
+        queryClient.invalidateQueries({ queryKey: ["suppliers"] }),
+        queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] })
+      ]);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to deactivate service.");
     }
   }
 
@@ -110,7 +133,22 @@ export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void })
           <h2>Comparable services, one clear view.</h2>
           <p>Every price below is normalized to an ex-VAT comparison basis.</p>
         </div>
-        <div className="heading-actions">
+        <div className="page-actions">
+          <button className="button primary compact" onClick={onUpload}>
+            + Upload quotes
+          </button>
+          <button className="button secondary compact" onClick={() => setShowCreateModal(true)}>
+            + Add service
+          </button>
+          <button
+            className="button secondary compact"
+            onClick={exportCsv}
+            disabled={!catalog.data?.items.length}
+          >
+            ↓ Export CSV
+          </button>
+        </div>
+        <div className="catalog-controls">
           <label className="search-box">
             <span aria-hidden="true">⌕</span>
             <input
@@ -121,82 +159,147 @@ export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void })
               aria-label="Search catalog"
             />
           </label>
-          <label className="catalog-select catalog-sort">
-            <span>Sort</span>
+          <label className="catalog-select category-dropdown">
+            <span>Category</span>
             <select
-              aria-label="Sort catalog services"
-              value={sort}
-              onChange={(event) => setSort(event.target.value as CatalogSortOption)}
+              value={category}
+              onChange={(event) =>
+                setCategory(event.target.value as CatalogCategory | "")
+              }
             >
-              {catalogSortOptions.map((option) => (
-                <option value={option.value} key={option.value}>{option.label}</option>
+              <option value="">All categories</option>
+              {CATALOG_CATEGORIES.map((item) => (
+                <option value={item} key={item}>
+                  {categoryLabel(item)}
+                </option>
               ))}
             </select>
           </label>
-          <button
-            className="button secondary"
-            onClick={() => setShowCreateModal(true)}
-            title="Add a new canonical catalog service"
-          >
-            + Add Service
-          </button>
+          <DateRangeSelector
+            value={dateRangePreset}
+            onChange={setDateRangePreset}
+          />
+          <label className="catalog-select sort-select">
+            <span>Sort</span>
+            <select
+              value={`${sortBy}:${sortOrder}`}
+              onChange={(event) => selectSort(event.target.value)}
+            >
+              {sortOptions.map((option) => (
+                <option value={option.value} key={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
+      </div>
+
+      <div className="category-filter-strip" aria-label="Filter catalog by category">
+        <button
+          type="button"
+          className={category === "" ? "active" : ""}
+          aria-pressed={category === ""}
+          onClick={() => setCategory("")}
+        >
+          All
+        </button>
+        {CATALOG_CATEGORIES.map((item) => (
+          <button
+            type="button"
+            key={item}
+            className={category === item ? "active" : ""}
+            aria-pressed={category === item}
+            onClick={() => setCategory(item)}
+          >
+            {categoryLabel(item)}
+          </button>
+        ))}
       </div>
 
       {catalog.isLoading && <CatalogSkeleton />}
       {catalog.isError && <ErrorState message={catalog.error.message} />}
-      {catalog.data?.items.length === 0 && (
-        <div className="empty-state">
-          <span>∅</span>
-          <h3>No catalog services found</h3>
-          <p>
-            {query
-              ? `Nothing matches “${query}”. Try a broader search.`
-              : "Run ingestion and catalog matching to populate this view."}
-          </p>
-        </div>
-      )}
+      {catalog.data?.items.length === 0 &&
+        (query || category || dateRangePreset !== "all-time" ? (
+          <div className="empty-state">
+            <span>∅</span>
+            <h3>No catalog services found</h3>
+            <p>Nothing matches the current search, category, and date filters.</p>
+          </div>
+        ) : (
+          <div className="bootstrap-callout panel">
+            <span className="bootstrap-icon" aria-hidden="true">✦</span>
+            <div>
+              <p className="eyebrow">Empty workspace</p>
+              <h3>Bootstrap your catalog</h3>
+              <p>
+                Drop a batch of supplier PDF/XLSX quotes. DocuPipe extracts the raw
+                lines and AI normalization creates deduplicated base profiles with
+                filterable variants.
+              </p>
+            </div>
+            <button className="button primary" onClick={onUpload}>
+              Upload your first quotes
+            </button>
+          </div>
+        ))}
 
       <div className="catalog-grid">
-        {sortedItems.map((item) => (
+        {catalog.data?.items.map((item) => (
           <article
             className="catalog-card"
             key={item.id}
           >
             <button
-              type="button"
-              className="card-open-button"
-              aria-label={`View ${item.name}`}
+              className="catalog-card-hitbox"
               onClick={() => onSelect(item.id)}
+              aria-label={`Open ${item.name} price intelligence`}
             />
-            <div className="card-topline">
+            <div className="card-topline catalog-card-content">
               <span className="category-pill">{item.category}</span>
               <div className="card-topline-actions">
                 <button
                   type="button"
                   className="delete-icon-btn"
-                  title="Deactivate service"
                   aria-label={`Deactivate ${item.name}`}
-                  onClick={(e) => handleDelete(e, item.id, item.name)}
+                  onClick={() => void handleDelete(item.id, item.name)}
                 >
-                  🗑
+                  ×
                 </button>
                 <span className="arrow">↗</span>
               </div>
             </div>
-            <h3>{item.name}</h3>
-            <p>{item.description ?? "Canonical service with linked supplier pricing."}</p>
-            <small className="catalog-uploaded-date">
+            <h3 className="catalog-card-content">{item.name}</h3>
+            <p className="catalog-card-content">{item.description ?? "Canonical service with linked supplier pricing."}</p>
+            <small className="catalog-uploaded-date catalog-card-content">
               {item.lastUploadedAt
                 ? `Last uploaded ${formatDate(item.lastUploadedAt)}`
                 : "No uploaded quote date"}
             </small>
-            <div className="fair-price-row">
+            {item.variants.length > 0 && (
+              <div className="variant-preview catalog-card-content" aria-label={`${item.name} variants`}>
+                {item.variants.slice(0, 4).map((variant) => (
+                  <button
+                    type="button"
+                    className="variant-pill"
+                    key={variant.id}
+                    onClick={() => onSelect(item.id, [variant.id])}
+                    aria-label={`Open ${item.name}, ${variant.label}`}
+                  >
+                    {variant.label}
+                  </button>
+                ))}
+                {item.variants.length > 4 && (
+                  <span className="variant-pill">+{item.variants.length - 4}</span>
+                )}
+              </div>
+            )}
+            <div className="fair-price-row catalog-card-content">
               <span>Fair price</span>
               <strong>{item.fairPrice === null ? "Insufficient data" : zar.format(item.fairPrice)}</strong>
               <small>per {item.primaryUnit}</small>
             </div>
-            <dl className="card-metrics">
+            <dl className="card-metrics catalog-card-content">
               <div>
                 <dt>Suppliers</dt>
                 <dd>{formatNumber(item.supplierCount)}</dd>
@@ -217,7 +320,6 @@ export function CatalogBrowser({ onSelect }: { onSelect: (id: string) => void })
           </article>
         ))}
       </div>
-
       {showCreateModal && (
         <CreateCatalogItemModal
           onClose={() => setShowCreateModal(false)}

@@ -2,21 +2,28 @@ import {
   calculateFairPrice,
   normalizeCatalogRate,
   type CatalogDetailResponse,
+  type CatalogDetailQuery,
+  type CatalogListQuery,
   type CatalogSummary,
+  type CatalogSortBy,
+  type CatalogVariant,
   type CreateCatalogItemInput,
   type CreateSupplierInput,
   type DateRangeQuery,
   type FairPriceDetail,
-  type IngestionRunAudit,
   type LinkedLineItem,
   type PaginatedCatalogResponse,
   type PriceHistoryPoint,
   type ReassignLineItemInput,
   type ReassignLineItemResult,
+  type SortOrder,
   type StatsResponse,
-  type SupplierAnalytics,
   type UnmatchedLineItemsResponse,
-  type SupplierComparison
+  type SupplierComparison,
+  type SupplierProfileResponse,
+  type SupplierListQuery,
+  type SupplierPerformance,
+  type IngestionRunAudit
 } from "@quote-intelligence/domain";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -30,6 +37,15 @@ interface CatalogRow {
   attributes: Record<string, unknown> | null;
 }
 
+interface CatalogVariantRow {
+  id: string;
+  catalog_item_id: string;
+  label: string;
+  attributes: Record<string, unknown> | null;
+  canonical_unit: string;
+  canonical_pricing_basis: string;
+}
+
 interface LineItemForReassignment {
   id: string;
   unit_raw: string;
@@ -41,30 +57,13 @@ interface CatalogBasisRow {
   canonical_pricing_basis: string;
 }
 
+interface VariantBasisRow {
+  id: string;
+  canonical_pricing_basis: string;
+}
+
 interface RecordWithId {
   id: string;
-}
-
-interface SupplierRow {
-  id: string;
-  display_name: string;
-  email: string | null;
-  phone: string | null;
-}
-
-interface QuoteSummaryRow {
-  supplier_id: string;
-  quote_date: string;
-}
-
-interface IngestionDocumentRow {
-  id: string;
-  filename: string;
-  file_type: string;
-  sha256: string;
-  extraction_status: string;
-  extraction_warnings: unknown;
-  created_at: string;
 }
 
 interface IngestionRunRow {
@@ -74,9 +73,19 @@ interface IngestionRunRow {
   status: string;
   parser_version: string;
   matching_version: string;
-  document_count: number;
-  error_count: number;
-  source_documents: IngestionDocumentRow[] | null;
+  document_count: number | null;
+  error_count: number | null;
+}
+
+interface SourceDocumentAuditRow {
+  id: string;
+  ingestion_run_id: string;
+  filename: string;
+  file_type: string;
+  sha256: string;
+  extraction_status: string;
+  extraction_warnings: unknown;
+  created_at: string;
 }
 
 export type ReassignOutcome =
@@ -93,11 +102,18 @@ interface ObservationRow {
   supplier_id: string;
   supplier_name: string;
   catalog_item_id: string | null;
+  match_status: "matched" | "review" | "unmatched" | null;
+  variant_id: string | null;
+  variant_label: string | null;
+  variant_attributes: Record<string, unknown> | null;
+  source_row: string | null;
   description_raw: string;
   quantity_raw: number | string;
   unit_raw: string;
   unit_rate_raw: number | string;
   line_total_raw: number | string;
+  line_total_ex_vat: number | string | null;
+  source_created_at: string;
   tax_basis: "inclusive" | "exclusive" | "unknown";
   unit_rate_ex_vat: number | string | null;
   canonical_rate_ex_vat: number | string | null;
@@ -107,7 +123,6 @@ interface ObservationRow {
   explanation: string | null;
   arithmetic_valid: boolean;
   validation_status: "valid" | "warning" | "invalid";
-  source_created_at: string;
 }
 
 const numberOrNull = (value: number | string | null): number | null => {
@@ -128,40 +143,37 @@ function canonicalSupplierName(name: string): string {
     .trim();
 }
 
-type CatalogSortKey = "fairPrice" | "supplierCount";
-type SortOrder = "asc" | "desc";
-
-export function sortCatalogSummaries(
-  items: CatalogSummary[],
-  sortBy: CatalogSortKey,
-  sortOrder: SortOrder
-): CatalogSummary[] {
-  return [...items].sort((left, right) => {
-    const leftValue = left[sortBy];
-    const rightValue = right[sortBy];
-
-    if (leftValue === null) return rightValue === null ? left.name.localeCompare(right.name) : 1;
-    if (rightValue === null) return -1;
-
-    const difference = leftValue - rightValue;
-    if (difference !== 0) return sortOrder === "asc" ? difference : -difference;
-    return left.name.localeCompare(right.name);
-  });
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string =>
+      typeof item === "string" && item.trim().length > 0
+  );
 }
 
 function validAnalyticsObservation(row: ObservationRow): boolean {
   return (
     row.is_current_revision &&
     row.arithmetic_valid &&
+    row.match_status === "matched" &&
     row.comparable === true &&
     numberOrNull(row.canonical_rate_ex_vat) !== null
   );
 }
 
+export function filterObservationsByDateRange<T extends { quote_date: string }>(
+  rows: T[],
+  range: DateRangeQuery
+): T[] {
+  return rows.filter(
+    ({ quote_date }) =>
+      (!range.from || quote_date >= range.from) &&
+      (!range.to || quote_date <= range.to)
+  );
+}
+
 function latestDate(rows: ObservationRow[]): Date {
-  const timestamps = rows
-    .map(({ quote_date }) => Date.parse(quote_date))
-    .filter(Number.isFinite);
+  const timestamps = rows.map(({ quote_date }) => Date.parse(quote_date));
   return new Date(Math.max(...timestamps, Date.now()));
 }
 
@@ -220,6 +232,9 @@ function buildFairPrice(rows: ObservationRow[]): FairPriceDetail {
     confidence,
     excludedCount: rows.length - included.length,
     outlierCount: observations.filter(({ outlier }) => outlier).length,
+    iqrLow: result.iqrLow,
+    iqrHigh: result.iqrHigh,
+    filteredMean: result.filteredMean,
     formula:
       result.method === "weighted-median"
         ? "0.70 × overall median + 0.30 × latest-180-day median"
@@ -230,47 +245,88 @@ function buildFairPrice(rows: ObservationRow[]): FairPriceDetail {
   };
 }
 
-export class CatalogService {
-  constructor(private readonly database: SupabaseClient) {}
+export function sortCatalogSummaries(
+  items: CatalogSummary[],
+  sortBy: CatalogSortBy,
+  sortOrder: SortOrder
+): CatalogSummary[] {
+  const direction = sortOrder === "asc" ? 1 : -1;
+  return [...items].sort((left, right) => {
+    let primary = 0;
+    if (sortBy === "name") {
+      primary = left.name.localeCompare(right.name, undefined, {
+        sensitivity: "base"
+      });
+    } else if (sortBy === "supplierCount") {
+      primary = left.supplierCount - right.supplierCount;
+    } else {
+      if (left.fairPrice === null && right.fairPrice !== null) return 1;
+      if (left.fairPrice !== null && right.fairPrice === null) return -1;
+      primary = (left.fairPrice ?? 0) - (right.fairPrice ?? 0);
+    }
 
-  async list(input: {
-    query: string;
-    page: number;
-    pageSize: number;
-  }): Promise<PaginatedCatalogResponse> {
-    const from = (input.page - 1) * input.pageSize;
-    const to = from + input.pageSize - 1;
+    if (primary !== 0) return primary * direction;
+    return left.name.localeCompare(right.name, undefined, {
+      sensitivity: "base"
+    });
+  });
+}
+
+export class CatalogService {
+  constructor(
+    private readonly database: SupabaseClient,
+    private readonly tenantId?: string
+  ) {}
+
+  async list(input: CatalogListQuery): Promise<PaginatedCatalogResponse> {
+    const pageOffset = (input.page - 1) * input.pageSize;
     let query = this.database
       .from("catalog_items")
       .select(
-        "id,name,description,category,canonical_unit,canonical_pricing_basis,attributes",
-        { count: "exact" }
+        "id,name,description,category,canonical_unit,canonical_pricing_basis,attributes"
       )
-      .eq("active", true)
-      .order("name")
-      .range(from, to);
+      .eq("active", true);
 
-    if (input.query) {
-      const escaped = input.query.replace(/[%_,()]/g, "");
-      query = query.or(`name.ilike.%${escaped}%,description.ilike.%${escaped}%`);
+    if (input.q) {
+      const escaped = input.q.replace(/[%_,()]/g, "").trim();
+      if (escaped) {
+        query = query.or(`name.ilike.%${escaped}%,description.ilike.%${escaped}%`);
+      }
+    }
+    if (input.category) {
+      query = query.eq("category", input.category);
     }
 
-    const { data, count, error } = await query;
+    const { data, error } = await query;
     if (error) throw error;
-    const items = (data ?? []) as CatalogRow[];
-    const ids = items.map(({ id }) => id);
-    const observations = ids.length ? await this.observationsFor(ids) : [];
+    const rows = (data ?? []) as CatalogRow[];
+    const ids = rows.map(({ id }) => id);
+    const [observations, variants] = ids.length
+      ? await Promise.all([
+          this.observationsFor(ids, input),
+          this.variantsFor(ids)
+        ])
+      : [[], []];
+    const summaries = sortCatalogSummaries(
+      rows.map((item) => this.summary(item, observations, variants)),
+      input.sortBy,
+      input.sortOrder
+    );
+    const items = summaries.slice(pageOffset, pageOffset + input.pageSize);
 
     return {
-      items: items.map((item) => this.summary(item, observations)),
+      items,
       page: input.page,
       pageSize: input.pageSize,
-      total: count ?? 0,
-      totalPages: Math.ceil((count ?? 0) / input.pageSize)
+      total: summaries.length,
+      totalPages: Math.ceil(summaries.length / input.pageSize)
     };
   }
 
-  async detail(id: string): Promise<CatalogDetailResponse | null> {
+  async detail(
+    id: string,
+    input: CatalogDetailQuery = { variantIds: [] }
+  ): Promise<CatalogDetailResponse | null> {
     const { data, error } = await this.database
       .from("catalog_items")
       .select(
@@ -283,7 +339,17 @@ export class CatalogService {
     if (!data) return null;
 
     const item = data as CatalogRow;
-    const rows = await this.observationsFor([id]);
+    const [allRows, variantRows] = await Promise.all([
+      this.observationsFor([id]),
+      this.variantsFor([id])
+    ]);
+    const selectedVariantIds = new Set(input.variantIds);
+    const rows = selectedVariantIds.size
+      ? allRows.filter(
+          ({ variant_id }) => variant_id && selectedVariantIds.has(variant_id)
+        )
+      : allRows;
+    const variants = this.catalogVariants(id, variantRows, allRows);
     const fairPrice = buildFairPrice(rows);
     return {
       item: {
@@ -293,7 +359,8 @@ export class CatalogService {
         category: item.category,
         primaryUnit: item.canonical_unit,
         pricingBasis: item.canonical_pricing_basis,
-        attributes: item.attributes ?? {}
+        attributes: item.attributes ?? {},
+        variants
       },
       priceHistory: this.priceHistory(rows),
       supplierComparison: this.supplierComparison(rows),
@@ -338,6 +405,7 @@ export class CatalogService {
     if (!lineItem) return { status: "line-item-not-found" };
 
     let targetCatalogItemId = input.targetCatalogItemId;
+    let targetVariantId = input.targetVariantId ?? null;
     let targetBasis: string;
     let created = false;
     let createdCatalogItemId: string | null = null;
@@ -346,6 +414,7 @@ export class CatalogService {
       const { data: newItem, error } = await this.database
         .from("catalog_items")
         .insert({
+          ...(this.tenantId ? { user_id: this.tenantId } : {}),
           name: input.newCatalogItemName,
           category: "Uncategorised",
           description: "Created by a manual line-item correction.",
@@ -356,11 +425,11 @@ export class CatalogService {
         .select("id")
         .single<RecordWithId>();
       if (error) throw error;
-      const createdItem = requireData(newItem, "Creating a catalog item for reassignment");
-      targetCatalogItemId = createdItem.id;
+      targetCatalogItemId = newItem.id;
       targetBasis = lineItem.unit_raw;
+      targetVariantId = null;
       created = true;
-      createdCatalogItemId = createdItem.id;
+      createdCatalogItemId = newItem.id;
     } else {
       const { data: target, error } = await this.database
         .from("catalog_items")
@@ -371,6 +440,18 @@ export class CatalogService {
       if (error) throw error;
       if (!target) return { status: "target-not-found" };
       targetBasis = target.canonical_pricing_basis;
+      if (targetVariantId) {
+        const { data: variant, error: variantError } = await this.database
+          .from("catalog_item_variants")
+          .select("id,canonical_pricing_basis")
+          .eq("id", targetVariantId)
+          .eq("catalog_item_id", target.id)
+          .eq("active", true)
+          .maybeSingle<VariantBasisRow>();
+        if (variantError) throw variantError;
+        if (!variant) return { status: "target-not-found" };
+        targetBasis = variant.canonical_pricing_basis;
+      }
     }
 
     const normalized = normalizeCatalogRate(
@@ -380,17 +461,20 @@ export class CatalogService {
     );
     const { data: current, error: currentError } = await this.database
       .from("normalized_price_observations")
-      .select("catalog_item_id")
+      .select("catalog_item_id,variant_id")
       .eq("line_item_id", id)
-      .maybeSingle<{ catalog_item_id: string | null }>();
+      .maybeSingle<{ catalog_item_id: string | null; variant_id: string | null }>();
     if (currentError) throw currentError;
 
     const { data: override, error: overrideError } = await this.database
       .from("catalog_match_overrides")
       .insert({
+        ...(this.tenantId ? { user_id: this.tenantId } : {}),
         line_item_id: id,
         catalog_item_id: targetCatalogItemId!,
+        variant_id: targetVariantId,
         previous_catalog_item_id: current?.catalog_item_id ?? null,
+        previous_variant_id: current?.variant_id ?? null,
         reason: created
           ? "Split into a new catalog item in the review UI."
           : "Reassigned in the review UI."
@@ -398,13 +482,14 @@ export class CatalogService {
       .select("id")
       .single<RecordWithId>();
     if (overrideError) throw overrideError;
-    const storedOverride = requireData(override, "Creating a catalog override");
 
     const { error: normalizationError } = await this.database
       .from("price_normalizations")
       .upsert(
         {
+          ...(this.tenantId ? { user_id: this.tenantId } : {}),
           line_item_id: id,
+          variant_id: targetVariantId,
           canonical_rate_ex_vat: normalized.canonicalRate,
           canonical_basis: normalized.canonicalBasis,
           estimated: normalized.estimated,
@@ -415,7 +500,7 @@ export class CatalogService {
         { onConflict: "line_item_id" }
       );
     if (normalizationError) {
-      await this.database.from("catalog_match_overrides").delete().eq("id", storedOverride.id);
+      await this.database.from("catalog_match_overrides").delete().eq("id", override.id);
       if (createdCatalogItemId) {
         await this.database.from("catalog_items").delete().eq("id", createdCatalogItemId);
       }
@@ -478,119 +563,282 @@ export class CatalogService {
     };
   }
 
-  async suppliers(range: DateRangeQuery): Promise<SupplierAnalytics[]> {
-    const [supplierResult, quoteResult] = await Promise.all([
-      this.database
-        .from("suppliers")
-        .select("id,display_name,email,phone")
-        .eq("active", true)
-        .order("display_name"),
-      this.dateFilteredQuery(
-        this.database.from("quotes").select("supplier_id,quote_date"),
-        range,
-        "quote_date"
-      )
-    ]);
-    if (supplierResult.error) throw supplierResult.error;
-    if (quoteResult.error) throw quoteResult.error;
+  async suppliersPerformance(input: SupplierListQuery): Promise<SupplierPerformance[]> {
+    const { data: suppliers, error: supplierError } = await this.database
+      .from("suppliers")
+      .select("id,display_name,email,phone")
+      .eq("active", true)
+      .order("display_name");
+    if (supplierError) throw supplierError;
 
-    const suppliers = (supplierResult.data ?? []) as SupplierRow[];
-    const quotes = (quoteResult.data ?? []) as QuoteSummaryRow[];
     let observationQuery = this.database
       .from("normalized_price_observations")
-      .select("*")
-      .eq("is_current_revision", true);
-    observationQuery = this.dateFilteredQuery(observationQuery, range, "quote_date");
-    const { data: observationData, error: observationError } = await observationQuery;
-    if (observationError) throw observationError;
-    const observations = (observationData ?? []) as ObservationRow[];
+      .select("*");
+    if (input.from) observationQuery = observationQuery.gte("quote_date", input.from);
+    if (input.to) observationQuery = observationQuery.lte("quote_date", input.to);
 
-    const marketRates = new Map<string, number>();
-    const catalogIds = [
-      ...new Set(
-        observations
-          .filter(validAnalyticsObservation)
-          .map(({ catalog_item_id }) => catalog_item_id)
-          .filter((id): id is string => id !== null)
-      )
-    ];
-    for (const catalogId of catalogIds) {
-      const rows = observations.filter(({ catalog_item_id }) => catalog_item_id === catalogId);
-      const fairPrice = buildFairPrice(rows).value;
-      if (fairPrice !== null && fairPrice !== 0) marketRates.set(catalogId, fairPrice);
+    const { data: observations, error: obsError } = await observationQuery;
+    if (obsError) throw obsError;
+
+    const rows = filterObservationsByDateRange(
+      (observations ?? []) as ObservationRow[],
+      input
+    );
+    const validByCatalogItem = new Map<string, ObservationRow[]>();
+    for (const row of rows.filter(validAnalyticsObservation)) {
+      if (!row.catalog_item_id) continue;
+      validByCatalogItem.set(row.catalog_item_id, [
+        ...(validByCatalogItem.get(row.catalog_item_id) ?? []),
+        row
+      ]);
     }
+    const fairPriceByCatalogItem = new Map(
+      [...validByCatalogItem.entries()].map(([catalogItemId, itemRows]) => [
+        catalogItemId,
+        buildFairPrice(itemRows).value
+      ])
+    );
 
-    return suppliers.map((supplier) => {
-      const supplierQuotes = quotes.filter(({ supplier_id }) => supplier_id === supplier.id);
-      const supplierRows = observations.filter(
-        ({ supplier_id }) => supplier_id === supplier.id
-      );
-      const comparableRates = supplierRows
-        .filter(validAnalyticsObservation)
-        .map((row) => numberOrNull(row.canonical_rate_ex_vat)!)
-        .filter(Number.isFinite);
-      const variances = supplierRows.flatMap((row) => {
-        if (!validAnalyticsObservation(row) || !row.catalog_item_id) return [];
-        const marketRate = marketRates.get(row.catalog_item_id);
-        const rate = numberOrNull(row.canonical_rate_ex_vat);
-        return marketRate && rate !== null ? [(rate / marketRate - 1) * 100] : [];
-      });
-      const dates = supplierQuotes.map(({ quote_date }) => quote_date).sort();
+    return (suppliers ?? []).map((s) => {
+      const supplierRows = rows.filter((r) => r.supplier_id === s.id);
+      const quotes = new Set(supplierRows.map((r) => r.quote_id));
+      const dates = supplierRows.map((r) => r.quote_date).sort();
+      const valid = supplierRows.filter(validAnalyticsObservation);
+
+      let varianceSum = 0;
+      let varianceCount = 0;
+
+      for (const row of valid) {
+        if (!row.catalog_item_id) continue;
+        const fairPrice = fairPriceByCatalogItem.get(row.catalog_item_id);
+        const rate = numberOrNull(row.canonical_rate_ex_vat)!;
+        if (fairPrice && fairPrice > 0) {
+          const diffPct = ((rate - fairPrice) / fairPrice) * 100;
+          varianceSum += diffPct;
+          varianceCount += 1;
+        }
+      }
+
+      const validRates = valid.map((r) => numberOrNull(r.canonical_rate_ex_vat)!);
+      const variancePercent = varianceCount > 0 ? varianceSum / varianceCount : null;
+      const totalSpend = supplierRows
+        .filter(({ is_current_revision }) => is_current_revision)
+        .reduce(
+          (sum, row) => sum + (numberOrNull(row.line_total_ex_vat) ?? 0),
+          0
+        );
 
       return {
-        supplierId: supplier.id,
-        supplierName: supplier.display_name,
-        email: supplier.email,
-        phone: supplier.phone,
-        quoteCount: supplierQuotes.length,
+        supplierId: s.id,
+        supplierName: s.display_name,
+        email: s.email,
+        phone: s.phone,
+        quoteCount: quotes.size,
         lineItemCount: supplierRows.length,
-        averageRate: comparableRates.length
-          ? comparableRates.reduce((sum, rate) => sum + rate, 0) / comparableRates.length
-          : null,
-        variancePercent: variances.length
-          ? variances.reduce((sum, variance) => sum + variance, 0) / variances.length
-          : null,
         firstQuoteDate: dates[0] ?? null,
-        lastQuoteDate: dates.at(-1) ?? null
+        lastQuoteDate: dates.at(-1) ?? null,
+        averageRate: validRates.length
+          ? validRates.reduce((sum, r) => sum + r, 0) / validRates.length
+          : 0,
+        variancePercent,
+        totalSpend,
+        competitivenessIndex:
+          variancePercent === null ? null : Math.max(0, 100 - variancePercent)
       };
     });
   }
 
+  async supplierProfile(id: string): Promise<SupplierProfileResponse | null> {
+    const { data: supplier, error: supplierError } = await this.database
+      .from("suppliers")
+      .select("id,display_name,email,phone,address,vat_number")
+      .eq("id", id)
+      .eq("active", true)
+      .maybeSingle<{
+        id: string;
+        display_name: string;
+        email: string | null;
+        phone: string | null;
+        address: string | null;
+        vat_number: string | null;
+      }>();
+    if (supplierError) throw supplierError;
+    if (!supplier) return null;
+
+    const { data: quotes, error: quoteError } = await this.database
+      .from("quotes")
+      .select(
+        "id,source_document_id,quote_number,quote_date,event_name,is_current_revision"
+      )
+      .eq("supplier_id", id)
+      .order("quote_date", { ascending: false });
+    if (quoteError) throw quoteError;
+    const quoteRows = (quotes ?? []) as Array<{
+      id: string;
+      source_document_id: string;
+      quote_number: string;
+      quote_date: string;
+      event_name: string | null;
+      is_current_revision: boolean;
+    }>;
+    const documentIds = quoteRows.map(({ source_document_id }) => source_document_id);
+    const { data: documents, error: documentError } = documentIds.length
+      ? await this.database
+          .from("source_documents")
+          .select("id,filename,storage_path")
+          .in("id", documentIds)
+      : { data: [], error: null };
+    if (documentError) throw documentError;
+    const documentRows = (documents ?? []) as Array<{
+      id: string;
+      filename: string;
+      storage_path: string | null;
+    }>;
+
+    const { data: observations, error: observationError } = await this.database
+      .from("normalized_price_observations")
+      .select("*")
+      .eq("supplier_id", id)
+      .order("quote_date", { ascending: false });
+    if (observationError) throw observationError;
+    const rows = (observations ?? []) as ObservationRow[];
+    const catalogIds = [
+      ...new Set(
+        rows
+          .map(({ catalog_item_id }) => catalog_item_id)
+          .filter((value): value is string => Boolean(value))
+      )
+    ];
+    const { data: catalogItems, error: catalogError } = catalogIds.length
+      ? await this.database
+          .from("catalog_items")
+          .select("id,name")
+          .in("id", catalogIds)
+      : { data: [], error: null };
+    if (catalogError) throw catalogError;
+    const catalogNames = new Map(
+      ((catalogItems ?? []) as Array<{ id: string; name: string }>).map((item) => [
+        item.id,
+        item.name
+      ])
+    );
+    const performance = (await this.suppliersPerformance({})).find(
+      ({ supplierId }) => supplierId === id
+    );
+
+    const quoteRecords = await Promise.all(
+      quoteRows.map(async (quote) => {
+        const document = documentRows.find(
+          ({ id: documentId }) => documentId === quote.source_document_id
+        );
+        const quoteLines = rows.filter(({ quote_id }) => quote_id === quote.id);
+        let downloadUrl: string | null = null;
+        if (document?.storage_path) {
+          const { data } = await this.database.storage
+            .from("quote-source-files")
+            .createSignedUrl(document.storage_path, 900);
+          downloadUrl = data?.signedUrl ?? null;
+        }
+
+        return {
+          id: quote.id,
+          quoteNumber: quote.quote_number,
+          quoteDate: quote.quote_date,
+          eventName: quote.event_name,
+          totalExVat: quoteLines.length
+            ? quoteLines.reduce(
+                (sum, row) => sum + (numberOrNull(row.line_total_ex_vat) ?? 0),
+                0
+              )
+            : null,
+          originalFilename: document?.filename ?? "Source file unavailable",
+          sourceDocumentId: quote.source_document_id,
+          downloadUrl,
+          lines: quoteLines.map((row) => ({
+            id: row.line_item_id,
+            sourceRow: row.source_row,
+            rawDescription: row.description_raw,
+            quantity: Number(row.quantity_raw),
+            rawUnit: row.unit_raw,
+            rawRate: Number(row.unit_rate_raw),
+            rawTotal: Number(row.line_total_raw),
+            normalizedRate: numberOrNull(row.canonical_rate_ex_vat),
+            normalizedBasis: row.canonical_basis,
+            catalogItemName: row.catalog_item_id
+              ? catalogNames.get(row.catalog_item_id) ?? null
+              : null,
+            variantLabel: row.variant_label
+          }))
+        };
+      })
+    );
+
+    return {
+      supplier: {
+        id: supplier.id,
+        name: supplier.display_name,
+        email: supplier.email,
+        phone: supplier.phone,
+        address: supplier.address,
+        vatNumber: supplier.vat_number
+      },
+      quoteCount: quoteRows.length,
+      totalSpend: performance?.totalSpend ?? 0,
+      competitivenessIndex: performance?.competitivenessIndex ?? null,
+      quotes: quoteRecords
+    };
+  }
+
   async ingestionAudit(): Promise<IngestionRunAudit[]> {
-    const { data, error } = await this.database
+    const { data: runs, error: runError } = await this.database
       .from("ingestion_runs")
       .select(
-        "id,started_at,completed_at,status,parser_version,matching_version,document_count,error_count,source_documents(id,filename,file_type,sha256,extraction_status,extraction_warnings,created_at)"
+        "id,started_at,completed_at,status,parser_version,matching_version,document_count,error_count"
       )
       .order("started_at", { ascending: false })
-      .limit(50);
-    if (error) throw error;
+      .limit(10);
+    if (runError) throw runError;
 
-    return ((data ?? []) as IngestionRunRow[]).map((run) => ({
-      id: run.id,
-      startedAt: run.started_at,
-      completedAt: run.completed_at,
-      status: run.status,
-      parserVersion: run.parser_version,
-      matchingVersion: run.matching_version,
-      documentCount: run.document_count,
-      errorCount: run.error_count,
-      documents: (Array.isArray(run.source_documents) ? run.source_documents : []).map((document) => ({
-        id: document.id,
-        filename: document.filename,
-        fileType: document.file_type,
-        sha256: document.sha256,
-        status: document.extraction_status,
-        warnings: document.extraction_warnings,
-        createdAt: document.created_at
-      }))
-    }));
+    const { data: docs, error: docError } = await this.database
+      .from("source_documents")
+      .select(
+        "id,ingestion_run_id,filename,file_type,sha256,extraction_status,extraction_warnings,created_at"
+      )
+      .order("created_at", { ascending: false });
+    if (docError) throw docError;
+
+    const runRows = (runs ?? []) as IngestionRunRow[];
+    const documentRows = (docs ?? []) as SourceDocumentAuditRow[];
+
+    return runRows.map((run) => {
+      const runDocs = documentRows.filter((d) => d.ingestion_run_id === run.id);
+      return {
+        id: run.id,
+        startedAt: run.started_at,
+        completedAt: run.completed_at,
+        status: run.status,
+        parserVersion: run.parser_version,
+        matchingVersion: run.matching_version,
+        documentCount: run.document_count ?? runDocs.length,
+        errorCount: run.error_count ?? 0,
+        documents: runDocs.map((d) => ({
+          id: d.id,
+          filename: d.filename,
+          fileType: d.file_type,
+          sha256: d.sha256,
+          status: d.extraction_status,
+          warnings: stringArray(d.extraction_warnings),
+          createdAt: d.created_at
+        }))
+      };
+    });
   }
 
   async createSupplier(input: CreateSupplierInput): Promise<{ id: string; name: string }> {
     const { data, error } = await this.database
       .from("suppliers")
       .insert({
+        ...(this.tenantId ? { user_id: this.tenantId } : {}),
         canonical_name: canonicalSupplierName(input.name),
         display_name: input.name,
         email: input.email || null,
@@ -608,18 +856,20 @@ export class CatalogService {
     const { data, error } = await this.database
       .from("catalog_items")
       .insert({
+        ...(this.tenantId ? { user_id: this.tenantId } : {}),
         name: input.name,
         category: input.category || "General",
         description: input.description || null,
         canonical_unit: input.pricingBasis || "item",
         canonical_pricing_basis: input.pricingBasis || "item",
         attributes: {},
+        is_base_profile: true,
         active: true
       })
       .select("id,name,description,category,canonical_unit,canonical_pricing_basis,attributes")
       .single<CatalogRow>();
     if (error) throw error;
-    return this.summary(requireData(data, "Creating a catalog item"), []);
+    return this.summary(requireData(data, "Creating a catalog item"), [], []);
   }
 
   async deleteSupplier(id: string): Promise<{ success: boolean }> {
@@ -644,27 +894,69 @@ export class CatalogService {
     return { success: data !== null };
   }
 
-  private dateFilteredQuery<T extends {
-    gte(column: string, value: string): T;
-    lte(column: string, value: string): T;
-  }>(query: T, range: DateRangeQuery, column: string): T {
-    let filtered = query;
-    if (range.from) filtered = filtered.gte(column, range.from);
-    if (range.to) filtered = filtered.lte(column, range.to);
-    return filtered;
-  }
-
-  private async observationsFor(catalogItemIds: string[]): Promise<ObservationRow[]> {
-    const { data, error } = await this.database
+  private async observationsFor(
+    catalogItemIds: string[],
+    range: DateRangeQuery = {}
+  ): Promise<ObservationRow[]> {
+    let query = this.database
       .from("normalized_price_observations")
       .select("*")
-      .in("catalog_item_id", catalogItemIds)
-      .order("quote_date");
+      .in("catalog_item_id", catalogItemIds);
+    if (range.from) query = query.gte("quote_date", range.from);
+    if (range.to) query = query.lte("quote_date", range.to);
+
+    const { data, error } = await query.order("quote_date");
     if (error) throw error;
-    return (data ?? []) as ObservationRow[];
+    return filterObservationsByDateRange(
+      (data ?? []) as ObservationRow[],
+      range
+    );
   }
 
-  private summary(item: CatalogRow, allRows: ObservationRow[]): CatalogSummary {
+  private async variantsFor(
+    catalogItemIds: string[]
+  ): Promise<CatalogVariantRow[]> {
+    if (catalogItemIds.length === 0) return [];
+    const { data, error } = await this.database
+      .from("catalog_item_variants")
+      .select(
+        "id,catalog_item_id,label,attributes,canonical_unit,canonical_pricing_basis"
+      )
+      .in("catalog_item_id", catalogItemIds)
+      .eq("active", true)
+      .order("label");
+    if (error) throw error;
+    return (data ?? []) as CatalogVariantRow[];
+  }
+
+  private catalogVariants(
+    catalogItemId: string,
+    variants: CatalogVariantRow[],
+    observations: ObservationRow[]
+  ): CatalogVariant[] {
+    return variants
+      .filter((variant) => variant.catalog_item_id === catalogItemId)
+      .map((variant) => ({
+        id: variant.id,
+        label: variant.label,
+        attributes: Object.fromEntries(
+          Object.entries(variant.attributes ?? {}).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string"
+          )
+        ),
+        primaryUnit: variant.canonical_unit,
+        pricingBasis: variant.canonical_pricing_basis,
+        observationCount: observations.filter(
+          ({ variant_id }) => variant_id === variant.id
+        ).length
+      }));
+  }
+
+  private summary(
+    item: CatalogRow,
+    allRows: ObservationRow[],
+    allVariants: CatalogVariantRow[]
+  ): CatalogSummary {
     const rows = allRows.filter(({ catalog_item_id }) => catalog_item_id === item.id);
     const valid = rows.filter(validAnalyticsObservation);
     const rates = valid.map((row) => numberOrNull(row.canonical_rate_ex_vat)!);
@@ -679,11 +971,13 @@ export class CatalogService {
       minPrice: rates.length ? Math.min(...rates) : null,
       maxPrice: rates.length ? Math.max(...rates) : null,
       fairPrice: buildFairPrice(rows).value,
-      lastUploadedAt: rows
-        .map(({ source_created_at }) => source_created_at)
-        .filter(Boolean)
-        .sort()
-        .at(-1) ?? null
+      lastUploadedAt:
+        rows
+          .map(({ source_created_at }) => source_created_at)
+          .filter(Boolean)
+          .sort()
+          .at(-1) ?? null,
+      variants: this.catalogVariants(item.id, allVariants, rows)
     };
   }
 
@@ -700,7 +994,9 @@ export class CatalogService {
         total: Number(row.line_total_raw),
         quoteNumber: row.quote_number,
         quoteId: row.quote_id,
-        estimated: row.estimated ?? false
+        estimated: row.estimated ?? false,
+        variantId: row.variant_id,
+        variantLabel: row.variant_label ?? "Base profile"
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
   }

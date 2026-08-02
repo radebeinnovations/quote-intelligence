@@ -1,245 +1,195 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { useRef, useState, type DragEvent } from "react";
-import type { UploadQuoteResponse } from "@quote-intelligence/domain";
-import { api, type QuoteUploadProgress } from "../api";
-import { formatNumber, zar } from "../format";
+import { useMutation } from "@tanstack/react-query";
+import type { BatchQuoteUploadInput } from "@quote-intelligence/domain";
+import { useState, type DragEvent } from "react";
+import { api } from "../api";
 import { useModalAccessibility } from "../use-modal-accessibility";
 
-interface UploadQuoteModalProps {
+const acceptedTypes = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+]);
+
+export function UploadQuoteModal({
+  onClose,
+  onUploaded = () => undefined
+}: {
   onClose: () => void;
-}
-
-type UploadStatus = "idle" | "uploading" | "parsing" | "success" | "error";
-
-function supportedFile(file: File): boolean {
-  return /\.(pdf|xlsx)$/i.test(file.name);
-}
-
-export function UploadQuoteModal({ onClose }: UploadQuoteModalProps) {
-  const queryClient = useQueryClient();
-  const dialogRef = useModalAccessibility(onClose);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [status, setStatus] = useState<UploadStatus>("idle");
-  const [progress, setProgress] = useState<QuoteUploadProgress>({
-    phase: "uploading",
-    percent: 0
+  onUploaded?: () => void;
+}) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [dropActive, setDropActive] = useState(false);
+  const dialog = useModalAccessibility(onClose);
+  const upload = useMutation({
+    mutationFn: async () =>
+      api.uploadQuotes({
+        files: await Promise.all(files.map(serializeFile))
+      }),
+    onSuccess: onUploaded
   });
-  const [dragging, setDragging] = useState(false);
-  const [filename, setFilename] = useState("");
-  const [error, setError] = useState("");
-  const [result, setResult] = useState<UploadQuoteResponse | null>(null);
-  const busy = status === "uploading" || status === "parsing";
 
-  async function beginUpload(file: File) {
-    if (!supportedFile(file)) {
-      setError("Choose a PDF or XLSX quote file.");
-      setStatus("error");
-      return;
-    }
-    setFilename(file.name);
-    setError("");
-    setResult(null);
-    setStatus("uploading");
-    try {
-      const response = await api.uploadQuote(file, (nextProgress) => {
-        setProgress(nextProgress);
-        setStatus(nextProgress.phase);
-      });
-      setResult(response);
-      setStatus("success");
-      void Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["catalog"] }),
-        queryClient.invalidateQueries({ queryKey: ["stats"] }),
-        queryClient.invalidateQueries({ queryKey: ["suppliers"] }),
-        queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] }),
-        queryClient.invalidateQueries({ queryKey: ["ingestion-audit"] })
-      ]).catch(() => undefined);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Quote upload failed.");
-      setStatus("error");
-    }
+  function addFiles(nextFiles: File[]) {
+    const valid = nextFiles.filter(
+      (file) => Boolean(mimeTypeFor(file)) && file.size <= 25 * 1024 * 1024
+    );
+    setFiles((current) => {
+      const deduplicated = new Map(
+        [...current, ...valid].map((file) => [
+          `${file.name}-${file.size}-${file.lastModified}`,
+          file
+        ])
+      );
+      return [...deduplicated.values()].slice(0, 20);
+    });
   }
 
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
+  function drop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    setDragging(false);
-    if (busy) return;
-    const file = event.dataTransfer.files[0];
-    if (file) void beginUpload(file);
+    setDropActive(false);
+    addFiles([...event.dataTransfer.files]);
   }
-
-  function reset() {
-    setStatus("idle");
-    setProgress({ phase: "uploading", percent: 0 });
-    setFilename("");
-    setError("");
-    setResult(null);
-    if (inputRef.current) inputRef.current.value = "";
-  }
-
-  const matchedCount = result?.lineItems.filter(
-    ({ match }) => match.status === "matched"
-  ).length ?? 0;
 
   return (
     <div
       className="modal-backdrop"
       role="presentation"
-      onMouseDown={onClose}
+      onMouseDown={() => {
+        if (!upload.isPending) onClose();
+      }}
     >
       <div
+        ref={dialog}
         className="modal upload-modal"
-        ref={dialogRef}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="upload-quote-title"
+        aria-labelledby="upload-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <button
+          data-autofocus
           className="icon-button modal-close"
           onClick={onClose}
-          aria-label="Close upload"
+          aria-label="Close upload dialog"
+          disabled={upload.isPending}
         >
           ×
         </button>
-        <p className="eyebrow">Direct ingestion</p>
-        <h2 id="upload-quote-title">Upload Quote PDF</h2>
-        <p className="upload-intro">
-          Drop a supplier quote here. PDF and XLSX files are extracted, matched,
-          and saved to the audit trail automatically.
+        <p className="eyebrow">Catalog onboarding</p>
+        <h2 id="upload-title">Upload supplier quotes</h2>
+        <p className="modal-intro">
+          Add up to 20 PDF or XLSX quotes. Originals remain in your private vault;
+          extraction and catalog normalization preserve every raw source line.
         </p>
 
-        {!result && (
-          <div
-            className={`quote-dropzone ${dragging ? "is-dragging" : ""} ${busy ? "is-busy" : ""}`}
-            role="button"
-            tabIndex={busy ? -1 : 0}
-            aria-disabled={busy}
-            onDragEnter={(event) => { event.preventDefault(); if (!busy) setDragging(true); }}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
-            }}
-            onDrop={handleDrop}
-            onClick={() => { if (!busy) inputRef.current?.click(); }}
-            onKeyDown={(event) => {
-              if (!busy && (event.key === "Enter" || event.key === " ")) {
-                event.preventDefault();
-                inputRef.current?.click();
-              }
-            }}
-          >
+        <div
+          className={`upload-dropzone ${dropActive ? "active" : ""}`}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDropActive(true);
+          }}
+          onDragLeave={() => setDropActive(false)}
+          onDrop={drop}
+        >
+          <span className="upload-icon" aria-hidden="true">⇧</span>
+          <strong>Drop PDF/XLSX files here</strong>
+          <span>or choose files from your computer · 25 MB each</span>
+          <label className="button secondary compact upload-picker">
+            Choose files
             <input
-              ref={inputRef}
-              className="sr-only"
               type="file"
+              multiple
               accept=".pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              disabled={busy}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void beginUpload(file);
-              }}
+              onChange={(event) => addFiles([...(event.target.files ?? [])])}
             />
-            <span className="upload-icon" aria-hidden="true">⇧</span>
-            <strong>{busy ? filename : "Drag and drop a quote"}</strong>
-            <span>{busy ? "Keep this window open while extraction completes" : "or click to browse · PDF / XLSX · 25 MB max"}</span>
-          </div>
-        )}
+          </label>
+        </div>
 
-        {busy && (
-          <div className="upload-progress" aria-live="polite">
-            <div className="upload-progress-copy">
-              <strong>{status === "uploading" ? "Uploading document" : "Parsing and matching quote"}</strong>
-              <span>
-                {status === "uploading" && progress.percent !== null
-                  ? `${progress.percent}%`
-                  : "Extracting supplier, lines, and catalog matches…"}
-              </span>
-            </div>
-            <div
-              className="progress-track"
-              role="progressbar"
-              aria-label="Quote ingestion progress"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              {...(status === "uploading" && progress.percent !== null
-                ? { "aria-valuenow": progress.percent }
-                : { "aria-valuetext": "Parsing document" })}
-            >
-              <div
-                className={`progress-fill ${status === "parsing" ? "is-indeterminate" : ""}`}
-                style={status === "uploading" && progress.percent !== null
-                  ? { width: `${progress.percent}%` }
-                  : undefined}
-              />
-            </div>
-          </div>
-        )}
-
-        {status === "error" && (
-          <div className="upload-error" role="alert">
-            <strong>Could not ingest {filename || "this file"}</strong>
-            <p>{error}</p>
-            <button className="button secondary compact" onClick={reset}>Choose another file</button>
-          </div>
-        )}
-
-        {result && (
-          <div className="upload-results" aria-live="polite">
-            <div className="upload-success-heading">
-              <span className="upload-success-mark">✓</span>
-              <div>
-                <strong>{result.supplier.name}</strong>
-                <span>
-                  Quote {result.quote.quoteNumber} · {result.idempotent ? "Already ingested" : "Saved to Quote Intelligence"}
-                </span>
+        {files.length > 0 && (
+          <div className="upload-file-list" aria-label="Selected files">
+            {files.map((file) => (
+              <div key={`${file.name}-${file.size}-${file.lastModified}`}>
+                <span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span>
+                <button
+                  className="icon-button"
+                  aria-label={`Remove ${file.name}`}
+                  disabled={upload.isPending}
+                  onClick={() =>
+                    setFiles((current) => current.filter((item) => item !== file))
+                  }
+                >
+                  ×
+                </button>
               </div>
-              {result.idempotent && <span className="basis-pill">Duplicate detected</span>}
-            </div>
-            <div className="upload-result-metrics">
-              <div><span>Extracted lines</span><strong>{formatNumber(result.lineItems.length)}</strong></div>
-              <div><span>Catalog matches</span><strong>{formatNumber(matchedCount)}</strong></div>
-              <div><span>Warnings</span><strong>{formatNumber(result.warnings.length)}</strong></div>
-            </div>
-
-            <div className="upload-lines">
-              <table>
-                <thead>
-                  <tr><th>Extracted line</th><th>Qty / unit</th><th>Rate</th><th>Catalog match</th></tr>
-                </thead>
-                <tbody>
-                  {result.lineItems.map((line) => (
-                    <tr key={line.id}>
-                      <td><strong>{line.description}</strong><small>{zar.format(line.lineTotal)} total</small></td>
-                      <td>{formatNumber(line.quantity)} <small>{line.unit}</small></td>
-                      <td>{zar.format(line.unitRate)}</td>
-                      <td>
-                        {line.match.catalogItemName ? (
-                          <span className="upload-match-pill">✓ {line.match.catalogItemName}</span>
-                        ) : (
-                          <span className="upload-unmatched-pill">Needs review</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {result.warnings.length > 0 && (
-              <details className="upload-warnings">
-                <summary>{result.warnings.length} extraction warning{result.warnings.length === 1 ? "" : "s"}</summary>
-                <ul>{result.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
-              </details>
-            )}
-            <div className="modal-actions">
-              <button className="button secondary" onClick={reset}>Upload another</button>
-              <button className="button primary" onClick={onClose}>Done</button>
-            </div>
+            ))}
           </div>
         )}
+
+        {upload.isError && (
+          <p className="form-error" role="alert">{upload.error.message}</p>
+        )}
+        {upload.data && (
+          <div className="upload-result" role="status">
+            <strong>{upload.data.accepted} document(s) processed</strong>
+            <span>
+              {upload.data.documents.filter(({ status }) => status === "parsed").length}
+              {" succeeded · "}
+              {upload.data.documents.filter(({ status }) => status === "failed").length}
+              {" require attention"}
+            </span>
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button className="button secondary" onClick={onClose} disabled={upload.isPending}>
+            {upload.data ? "Done" : "Cancel"}
+          </button>
+          {!upload.data && (
+            <button
+              className="button primary"
+              disabled={!files.length || upload.isPending}
+              onClick={() => upload.mutate()}
+            >
+              {upload.isPending ? "Extracting & normalizing…" : `Process ${files.length || ""} quote${files.length === 1 ? "" : "s"}`}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
+}
+
+async function serializeFile(
+  file: File
+): Promise<BatchQuoteUploadInput["files"][number]> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read file."));
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(file);
+  });
+  const contentBase64 = dataUrl.split(",", 2)[1];
+  if (!contentBase64) throw new Error(`Could not encode ${file.name}.`);
+  return {
+    filename: file.name,
+    mimeType: mimeTypeFor(file)!,
+    contentBase64
+  };
+}
+
+function mimeTypeFor(
+  file: File
+): BatchQuoteUploadInput["files"][number]["mimeType"] | null {
+  if (acceptedTypes.has(file.type)) {
+    return file.type as BatchQuoteUploadInput["files"][number]["mimeType"];
+  }
+  if (/\.pdf$/i.test(file.name)) return "application/pdf";
+  if (/\.xlsx$/i.test(file.name)) {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  return null;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

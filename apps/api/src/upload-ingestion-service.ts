@@ -1,4 +1,3 @@
-import { createServiceDatabaseClient } from "@quote-intelligence/database";
 import {
   extractedDocumentSchema,
   findCatalogRule,
@@ -107,8 +106,18 @@ function canonicalSupplierName(name: string): string {
     .trim();
 }
 
+function safeFilename(filename: string): string {
+  return (
+    filename.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ||
+    "quote-upload"
+  );
+}
+
 export class UploadIngestionService implements UploadIngestionApi {
-  constructor(private readonly database: SupabaseClient = createServiceDatabaseClient()) {}
+  constructor(
+    private readonly database: SupabaseClient,
+    private readonly userId: string
+  ) {}
 
   async ingest(input: UploadIngestionInput): Promise<UploadQuoteResponse> {
     const sha256 = createHash("sha256").update(input.contents).digest("hex");
@@ -139,7 +148,7 @@ export class UploadIngestionService implements UploadIngestionApi {
     let sourceDocumentId: string | null = null;
     try {
       sourceDocumentId = existing
-        ? await this.retrySourceDocument(existing.id, ingestionRunId, input.filename)
+        ? await this.retrySourceDocument(existing.id)
         : await this.createSourceDocument(ingestionRunId, input, sha256);
 
       const document = await this.parse(input);
@@ -248,6 +257,7 @@ export class UploadIngestionService implements UploadIngestionApi {
     const { data, error } = await this.database
       .from("source_documents")
       .select("id,filename,extraction_status,raw_extraction,extraction_warnings")
+      .eq("user_id", this.userId)
       .eq("sha256", sha256)
       .maybeSingle<ExistingSourceRow>();
     if (error) throw error;
@@ -258,6 +268,7 @@ export class UploadIngestionService implements UploadIngestionApi {
     const { data, error } = await this.database
       .from("ingestion_runs")
       .insert({
+        user_id: this.userId,
         parser_version: PARSER_VERSION,
         matching_version: MATCHING_VERSION,
         document_count: 1
@@ -285,31 +296,43 @@ export class UploadIngestionService implements UploadIngestionApi {
     input: UploadIngestionInput,
     sha256: string
   ): Promise<string> {
+    const storagePath = `${this.userId}/${ingestionRunId}/${safeFilename(input.filename)}`;
+    const { error: storageError } = await this.database.storage
+      .from("quote-source-files")
+      .upload(storagePath, input.contents, {
+        contentType:
+          input.fileType === "pdf"
+            ? "application/pdf"
+            : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        upsert: false
+      });
+    if (storageError) throw storageError;
     const { data, error } = await this.database
       .from("source_documents")
       .insert({
+        user_id: this.userId,
         ingestion_run_id: ingestionRunId,
         filename: input.filename,
         file_type: input.fileType,
         sha256,
+        storage_path: storagePath,
         extraction_status: "processing"
       })
       .select("id")
       .single<RecordWithId>();
-    if (error) throw error;
+    if (error) {
+      await this.database.storage.from("quote-source-files").remove([storagePath]);
+      throw error;
+    }
     return requireData(data, "Creating a source document").id;
   }
 
   private async retrySourceDocument(
-    sourceDocumentId: string,
-    ingestionRunId: string,
-    filename: string
+    sourceDocumentId: string
   ): Promise<string> {
     const { error } = await this.database
       .from("source_documents")
       .update({
-        ingestion_run_id: ingestionRunId,
-        filename,
         extraction_status: "processing",
         extraction_warnings: []
       })
@@ -321,6 +344,7 @@ export class UploadIngestionService implements UploadIngestionApi {
   private async upsertSupplier(document: ExtractedDocument): Promise<string> {
     const supplier = document.supplier;
     const values = {
+      user_id: this.userId,
       canonical_name: canonicalSupplierName(supplier.name),
       display_name: supplier.name,
       vat_number: supplier.vatNumber ?? null,
@@ -332,7 +356,7 @@ export class UploadIngestionService implements UploadIngestionApi {
     if (supplier.vatNumber) {
       const { data, error } = await this.database
         .from("suppliers")
-        .upsert(values, { onConflict: "vat_number" })
+        .upsert(values, { onConflict: "user_id,vat_number" })
         .select("id")
         .single<RecordWithId>();
       if (error) throw error;
@@ -342,6 +366,7 @@ export class UploadIngestionService implements UploadIngestionApi {
     const { data: existing, error: selectError } = await this.database
       .from("suppliers")
       .select("id")
+      .eq("user_id", this.userId)
       .eq("canonical_name", values.canonical_name)
       .maybeSingle<RecordWithId>();
     if (selectError) throw selectError;
@@ -375,6 +400,7 @@ export class UploadIngestionService implements UploadIngestionApi {
     const { data, error } = await this.database
       .from("quotes")
       .insert({
+        user_id: this.userId,
         source_document_id: sourceDocumentId,
         supplier_id: supplierId,
         quote_number: quoteNumber,
@@ -431,6 +457,7 @@ export class UploadIngestionService implements UploadIngestionApi {
       const unitRate = normalizeToExVat(item.unitRate, document.quote.taxBasis, document.quote.vatRate);
       const lineTotal = normalizeToExVat(item.lineTotal, document.quote.taxBasis, document.quote.vatRate);
       return {
+        user_id: this.userId,
         quote_id: quoteId,
         source_row: item.sourceRow ?? null,
         description_raw: item.description,
@@ -469,6 +496,7 @@ export class UploadIngestionService implements UploadIngestionApi {
       const rule = findCatalogRule(line.description_raw);
       if (!rule) {
         await this.database.from("catalog_matches").insert({
+          user_id: this.userId,
           line_item_id: line.id,
           catalog_item_id: null,
           status: "unmatched",
@@ -496,6 +524,7 @@ export class UploadIngestionService implements UploadIngestionApi {
         rule.canonicalBasis
       );
       await this.database.from("catalog_matches").insert({
+        user_id: this.userId,
         line_item_id: line.id,
         catalog_item_id: catalogItemId,
         status: "matched",
@@ -504,6 +533,7 @@ export class UploadIngestionService implements UploadIngestionApi {
         reason_codes: ["ALIASED_DESCRIPTION", "PROTECTED_ATTRIBUTES_COMPATIBLE"]
       }).throwOnError();
       await this.database.from("price_normalizations").insert({
+        user_id: this.userId,
         line_item_id: line.id,
         canonical_rate_ex_vat: normalized.canonicalRate,
         canonical_basis: normalized.canonicalBasis,
@@ -525,6 +555,7 @@ export class UploadIngestionService implements UploadIngestionApi {
     const { data, error } = await this.database
       .from("catalog_items")
       .upsert({
+        user_id: this.userId,
         name: rule.name,
         category: rule.category,
         description: rule.description,
@@ -532,7 +563,7 @@ export class UploadIngestionService implements UploadIngestionApi {
         canonical_pricing_basis: rule.canonicalBasis,
         attributes: { generatedBy: MATCHING_VERSION },
         active: true
-      }, { onConflict: "name" })
+      }, { onConflict: "user_id,name" })
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
