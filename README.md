@@ -1,250 +1,189 @@
-# Quote Intelligence MVP
+# Quote Intelligence
 
-Quote Intelligence turns Bokmakierie Events' supplier quotations into a searchable
-catalog of comparable services. Procurement users can see historical prices, compare
-suppliers on a common pricing basis, understand a transparent fair-price estimate, and
-correct catalog matches without editing PostgreSQL manually.
+Quote Intelligence converts supplier quotations for Bokmakierie Events into a secure,
+searchable procurement catalog. Authenticated users can compare normalized historical
+prices, inspect original evidence, understand a transparent fair-price benchmark, and
+correct catalog matches without changing immutable source records.
 
-The repository implements the SupaTech take-home brief using React, TypeScript,
-Fastify, Supabase/PostgreSQL, DocuPipe for PDFs, and a focused ZIP/XML spreadsheet
-reader for XLSX.
+The repository implements the SupaTech take-home brief and the platform-overhaul scope
+with React, TypeScript, Fastify, Supabase/PostgreSQL, DocuPipe, and OpenAI structured
+normalization.
 
 ## Architecture
 
 ```text
 apps/
-  web/          React/Vite procurement interface
-  api/          Fastify API; the only browser-facing database boundary
+  web/          React, Vite, React Query, Recharts, accessible vanilla CSS
+  api/          Fastify; the only browser-facing application/database boundary
 packages/
-  domain/       Shared schemas, API types, validation, unit and fair-price logic
-  database/     Server-side Supabase client
+  domain/       Zod API contracts, units, VAT, and fair-price mathematics
+  database/     Authenticated and service-role Supabase client factories
 scripts/
-  ingest/       PDF/XLSX extraction, persistence and catalog matching CLIs
+  ingest/       XLSX/PDF extraction, persistence, and catalog matching CLIs
 supabase/
-  migrations/  PostgreSQL schema
+  migrations/  PostgreSQL schema, views, RLS, audit controls, and private storage
 candidate-pack/
-  sample-quotes/  51 supplied assessment documents
+  sample-quotes/  51 assessment documents from ten South African suppliers
 ```
 
-The browser never receives the Supabase service-role key. Fastify performs reads and
-corrections, while ingestion scripts use the service role from a trusted local process.
-Row-level security is enabled without public policies by default.
+The browser uses the Supabase publishable key only for authentication. Every API
+request carries the user's access token. Fastify creates a token-bound Supabase client,
+so PostgreSQL row-level security remains the final tenant boundary. The service-role key
+is confined to trusted server-side identity validation and offline ingestion.
 
-## What is implemented
+## Implemented product surface
 
-- Paginated, searchable catalog API and catalog browser.
-- Item detail API with chronological price history, supplier aggregation, fair-price
-  evidence, and linked source lines.
-- User-facing reassignment and split controls backed by immutable override records.
-- A review queue exposes conservative non-matches and lets users assign them without
-  editing PostgreSQL directly.
-- Overview statistics for quotes, suppliers, catalog items, line items, and date range.
-- Direct, read-only XLSX ingestion for the ten Nightjar and Swift Move workbooks.
-- Configurable DocuPipe structured extraction for all PDF quotes.
-- SHA-256 document idempotency and ingestion-run audit records.
-- Quote revision preservation. Only the highest revision is active for analytics.
-- Day-first South African date parsing and ZAR defaults.
-- VAT-inclusive to ex-VAT normalization.
-- Conservative deterministic catalog rules with protected attributes.
-- Staffing conversion to person-hour, equipment hire to item-day, and separate
-  per-kilometre/per-trip transport bases.
+- Email/password authentication with isolated React Query caches per session.
+- Tenant-scoped catalog, suppliers, quotes, source documents, matches, overrides,
+  normalizations, ingestion runs, and catalog variants.
+- Search, category filtering, date ranges, pagination, and multi-column catalog sorting.
+- Fair-price cards, IQR evidence, supplier comparisons, and multi-variant price charts.
+- Unmatched/review queue and auditable line-item reassignment or catalog splitting.
+- Batch PDF/XLSX upload with per-file results and empty-account bootstrap states.
+- Supplier performance and supplier profiles with total spend, competitiveness,
+  quote history, exact extracted lines, and links to private original files.
+- Ingestion audit cards with parser/model versions, hashes, warnings, and errors.
+- CSV exports for catalog benchmarks and linked supplier evidence.
+- Responsive dark/light themes, keyboard-accessible modals, and loading/error/empty states.
 
-## Database model
+## Security and data integrity
 
-Database migrations live in [`supabase/migrations`](supabase/migrations). Apply the
-full directory in order; the supplier soft-delete migration adds `suppliers.active`
-and updates the analytics view to exclude inactive suppliers and catalog services.
+Migration `202608020001_multi_tenant_platform.sql` adds tenant ownership and enforces it
+with RLS plus composite tenant foreign keys. It also creates the private
+`quote-source-files` storage bucket; object paths begin with the authenticated user ID.
+Signed URLs are generated only for records visible to that user.
 
-The main layers are:
+Raw data is append-only in normal operation:
 
-1. `ingestion_runs` and `source_documents` preserve provenance, hashes, raw DocuPipe
-   responses, and extraction warnings.
-2. `suppliers`, `quotes`, and `quote_line_items` preserve source values. Raw amounts
-   are never overwritten by cleaned amounts.
-3. `catalog_items` stores canonical real-world services.
-4. `catalog_matches` stores generated matching decisions and confidence.
-5. `catalog_match_overrides` stores user corrections separately so generated and
-   human decisions remain auditable.
-6. `price_normalizations` records the canonical ex-VAT rate, basis, whether the
-   conversion is estimated, and its explanation.
-7. `normalized_price_observations` resolves the latest manual override over a
-   generated match and supplies the API's analytical projection.
+1. `ingestion_runs` and `source_documents` retain provenance, SHA-256 hashes, parser
+   versions, raw extraction JSON, warnings, storage paths, and timestamps.
+2. `suppliers`, `quotes`, and `quote_line_items` preserve the supplier's source values.
+3. `catalog_items` represents stable base profiles; `catalog_item_variants` contains
+   protected dimensions and packaging variants.
+4. `catalog_matches` stores machine decisions and confidence.
+5. `catalog_match_overrides` records corrections, including the previous catalog and
+   variant, without overwriting the generated match or raw line.
+6. `price_normalizations` records ex-VAT canonical rates, bases, estimation flags,
+   explanations, and model metadata.
+7. `normalized_price_observations` resolves the latest human override over the generated
+   match and supplies the analytical projection.
 
-## Extraction schema
+Database triggers prevent tenant reassignment after ownership is established and protect
+source-document identity, completed raw extraction, and raw quote fields from mutation.
 
-DocuPipe receives a structured JSON schema covering:
+## Extraction and normalization pipeline
+
+### PDF
+
+PDFs are uploaded to DocuPipe, polled to completion, standardized into the extraction
+schema, and validated with Zod. The full response and warning trail are retained. The
+normalized description is then sent to OpenAI using strict JSON Schema output. The
+default model is `gpt-4o-mini`, configurable through `OPENAI_MODEL`.
+
+### XLSX
+
+XLSX files are parsed directly with `fflate` and `fast-xml-parser`. The reader processes
+Open XML data only, never executes workbook macros, and locates labeled metadata and
+line-item headers instead of relying on filenames or fixed row numbers.
+
+### Structured extraction shape
 
 ```ts
 {
-  supplier: {
-    name,
-    vatNumber?,
-    contactName?,
-    email?,
-    phone?,
-    address?
-  },
+  supplier: { name, vatNumber?, contactName?, email?, phone?, address? },
   quote: {
-    quoteNumber,
-    revisionNumber?,
-    dateText,
-    eventName?,
-    currency,
-    vatRate,
-    taxBasis,
-    subtotal?,
-    vatAmount?,
-    total?
+    quoteNumber, revisionNumber?, dateText, eventName?, currency,
+    vatRate, taxBasis, subtotal?, vatAmount?, total?
   },
   lineItems: [{
-    sourceRow?,
-    description,
-    quantity,
-    unit,
-    unitRate,
-    lineTotal
+    sourceRow?, description, quantity, unit, unitRate, lineTotal
   }],
   notes: []
 }
 ```
 
-`dateText` deliberately preserves the document representation. The ingestion layer
-then parses it using South African conventions and stores an ISO PostgreSQL date.
-DocuPipe output is validated with Zod and retained as JSON before normalization.
+The pipeline validates document signatures, file types, file size, required fields,
+`quantity × rate`, subtotals, VAT, totals, and duplicate SHA-256 content. Numeric dates
+are parsed day-first. Warnings remain visible; inconsistent rows are not silently fixed.
 
-The XLSX parser uses `fflate` and `fast-xml-parser` to read the Open XML worksheet
-without loading macros or executing workbook content. It locates labeled metadata and the
-`Description | Qty | Unit | Rate | Amount` header rather than relying on a filename or
-fixed row offset. Numeric cells remain numeric and are independently reconciled.
+## Catalog matching and variants
 
-### Extraction validation
+Matching is precision-first because a false merge is as damaging as a missed match.
 
-The pipeline checks:
+1. Normalize case, punctuation, whitespace, and common supplier wording.
+2. Generate deterministic candidates and an OpenAI structured canonical suggestion.
+3. Apply hard protected-attribute gates after the model response.
+4. Reuse an existing base profile and variant only when the dimensions and pricing basis
+   are compatible; otherwise create a separate variant or leave the line unmatched.
+5. Exclude unmatched, low-confidence, invalid, superseded, or non-comparable evidence
+   from fair-price calculations.
 
-- `quantity × unit rate` against each source line total;
-- line totals against the quoted subtotal;
-- VAT against the stated subtotal and rate;
-- required supplier, quote, date, and line-item fields;
-- duplicate documents using SHA-256;
-- revision suffixes such as `(Rev 2)`.
+Protected attributes include generator kVA, gazebo dimensions, vehicle tonnage/capacity,
+day versus night security, and per-hour/per-day/per-trip/per-kilometre bases. A model
+cannot override these deterministic guards. Base profiles consolidate the real-world
+service while variants preserve meaningful configurations and packaging.
 
-Warnings are retained rather than silently changing the supplier document. For
-example, the inconsistent Event Crew total in `JES-26-057` remains visible and is
-excluded from fair-price analytics.
+Users can reassign a line to an existing catalog item and variant or split it into a new
+catalog item. Reassignment recalculates normalization against the target basis. An
+incompatible conversion remains visible but is marked non-comparable instead of carrying
+a stale price into analytics.
 
-## Catalog matching strategy
+## VAT and unit normalization
 
-Matching is intentionally precision-first because a false merge is as harmful as a
-missed match.
-
-1. Normalize case, whitespace, punctuation, and supplier wording.
-2. Resolve curated aliases such as waiter/waitstaff/waitron and
-   event crew/general crew/setup-and-breakdown crew.
-3. Preserve protected attributes:
-   - day versus night security;
-   - 20 kVA versus 40 kVA generators;
-   - 3×3 m versus 5×5 m gazebos;
-   - vehicle capacity;
-   - person, platter, trip, kilometre, event, and package pricing bases.
-4. Match only explicit, reviewed patterns with a high confidence score.
-5. Leave unknown descriptions unmatched instead of guessing.
-
-The current MVP uses deterministic aliases and regular-expression attributes because
-they are explainable and reproducible across this small corpus. A future matcher can
-add token similarity or embeddings only as candidate-generation tools; protected
-attribute gates and human review should remain authoritative.
-
-Run matching after ingestion:
-
-```bash
-npm run catalog:match
-```
-
-The UI shows raw supplier descriptions and provides **Reassign**. A user can select an
-existing service or split a line into a new catalog item. The original generated match
-is not destroyed. Reassignment recalculates the canonical price using the target
-catalog basis; incompatible moves remain visible but are excluded from fair-price
-analytics instead of silently carrying a stale normalization.
-
-## Unit and VAT normalization
-
-All analytics are shown in ZAR excluding VAT.
+All analytics are ZAR excluding VAT. The default South African VAT rate is 15%.
 
 ```text
-exclusive source rate → unchanged
-inclusive source rate → source rate ÷ 1.15
-unknown tax basis     → visible, but excluded from comparable analytics
+exclusive rate     -> unchanged
+inclusive rate     -> rate / 1.15
+unknown tax basis  -> retained as evidence, excluded from comparable analytics
 ```
 
-Approved staffing conversions:
+Explicit supported conversions include:
 
 ```text
-hour             → person-hour, unchanged
-4-hour callout   → rate ÷ 4
-12-hour shift    → rate ÷ 12
-Nightjar day     → rate ÷ 10, marked estimated
+staff hour          -> person-hour
+4-hour callout      -> rate / 4 person-hours
+12-hour shift       -> rate / 12 person-hours
+Nightjar day        -> rate / 10 person-hours, estimated with explanation
+24-hour equipment   -> item-day
 ```
 
-Nightjar states that a staff day covers *up to* ten hours, so its hourly conversion is
-an estimate and is labeled as such. Equipment explicitly billed for a 24-hour hire is
-normalized to item-day.
-
-Thabo's per-kilometre transport and Swift Move's flat trip pricing remain separate.
-Swift's “within 60 km” condition is not an exact journey distance and cannot support an
-honest per-kilometre conversion. All-in production packages also remain separate from
-their standalone components.
+Per-kilometre and per-trip transport remain separate. Packages remain separate from
+standalone components unless the source provides an exact, defensible allocation.
 
 ## Fair-price definition
 
-Only observations satisfying all of the following contribute:
+Eligible evidence must be from the current quote revision, matched to the selected
+catalog variant, arithmetically valid, ex-VAT normalized, and comparable on the canonical
+unit basis.
 
-- current quote revision;
-- known VAT basis and normalized ex-VAT rate;
-- compatible canonical unit;
-- valid line arithmetic.
-
-The baseline is the median because this is a small, intentionally messy dataset with
-material outliers. When there are at least three observations in the latest 180 days:
+When at least three eligible observations fall in the latest 180 days:
 
 ```text
-fair price = 0.70 × overall median + 0.30 × recent median
+fair price = 0.70 * overall median + 0.30 * recent-180-day median
 ```
 
-Otherwise:
+Otherwise the fair price is the overall median. The UI exposes the medians, filtered
+mean, sample and supplier counts, exclusions, observations, confidence score, and
+1.5×IQR bounds. IQR outliers are highlighted and excluded from the displayed trimmed
+mean, but retained in the robust median benchmark.
 
-```text
-fair price = overall median
-```
+## South African data decisions
 
-The UI also displays mean, sample count, supplier count, excluded count, observations,
-and confidence. Confidence is a bounded evidence score based 60% on sample count and
-40% on supplier diversity; it is not a statistical confidence interval.
-
-Outliers are identified using the 1.5×IQR rule. They are highlighted but retained in
-the median. This preserves evidence such as Kokerboom's R625 standard buffet without
-letting the application erase an inconvenient source value.
-
-## Messy-data decisions
-
-- Default currency is ZAR and VAT is 15%, unless a quote states otherwise.
-- Numeric dates are day-first except explicit year-first dates.
-- Both decimal comma and decimal point source formats are accepted by extraction.
-- Cape Crew and Swift Move rates are VAT-inclusive and divided by 1.15.
-- Kokerboom documents that explicitly say prices include VAT are treated as inclusive.
-  The ambiguous Activation quote remains `unknown` until reviewed.
-- `BPH-26-058 (Rev 2)` supersedes the original quote. Both remain queryable, but only
-  Revision 2 contributes to active analytics.
-- Source arithmetic mismatches are warnings, not automatic corrections.
-- Similar-looking bundles and standalone services are separate catalog entries.
+- Currency defaults to ZAR; dates display as `DD/MM/YYYY`.
+- Explicit VAT-inclusive rates are divided by 1.15; unknown tax bases remain reviewable.
+- Revision records are preserved. Only the highest active revision contributes to
+  analytics.
+- Source arithmetic mismatches generate warnings and are excluded from fair pricing.
+- Similar bundles, protected configurations, and incompatible bases are not merged.
+- Supplier total spend uses source line totals; performance compares normalized eligible
+  rates with the corresponding market fair price. No misleading average-price metric is
+  used.
 
 ## Local setup
 
-Requirements:
-
-- Node.js 20 or newer
-- npm 10 or newer
-- Docker for local Supabase, or a hosted Supabase project
-- A DocuPipe account/API key for PDF extraction
+Requirements: Node.js 20+, npm 10+, a Supabase project, DocuPipe credentials for PDFs,
+and OpenAI credentials for AI-assisted normalization.
 
 ### 1. Install
 
@@ -252,76 +191,79 @@ Requirements:
 npm install
 ```
 
-### 2. Configure the environment
+### 2. Configure environment
 
-Copy `.env.example` to `.env` and set:
+Copy `.env.example` to `.env` and supply:
 
 ```dotenv
 SUPABASE_URL=...
+SUPABASE_ANON_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
 DATABASE_URL=...
+VITE_SUPABASE_URL=...
+VITE_SUPABASE_ANON_KEY=...
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4o-mini
 DOCUPIPE_API_KEY=...
-DOCUPIPE_PARSE_ENDPOINT=https://app.docupipe.ai
+DOCUPIPE_PARSE_ENDPOINT=https://api.docupipe.ai/v1/parse
 QUOTE_SOURCE_DIR=./candidate-pack/sample-quotes
+INGEST_USER_ID=...
+API_PORT=3001
+WEB_ORIGIN=http://localhost:5173
 ```
 
-`DOCUPIPE_PARSE_ENDPOINT` is explicit so deployments can follow DocuPipe endpoint
-changes without a code release. The client uploads each PDF, polls the asynchronous
-parse job, submits the parsed document to `/v3/standardize`, polls that job, and then
-validates the structured result with Zod.
+`INGEST_USER_ID` is the Supabase Auth UUID that owns records created by the offline CLI.
+Never commit `.env`, expose service/model keys to the browser, or paste secrets into issue
+trackers. Rotate any credential that has been publicly disclosed.
 
-### 3. Apply PostgreSQL migration
+### 3. Apply migrations
 
-With the Supabase CLI installed:
+For a fresh local project:
 
 ```bash
 supabase start
 supabase db reset
 ```
 
-For hosted Supabase, link the project and run:
+For hosted Supabase:
 
 ```bash
 supabase link --project-ref YOUR_PROJECT_REF
 supabase db push
 ```
 
-### 4. Validate extraction without consuming PDF credits
+Existing pre-tenant rows have a null owner after the schema migration. Assign and verify
+one owner before relying on authenticated UI counts. Audit and resolve duplicates before
+adding ownership where a tenant-scoped uniqueness rule would be violated.
+
+### 4. Validate extraction without PDF credits
 
 ```bash
 npm run ingest:dry-run
 ```
 
-This parses all ten XLSX files and reports the 41 PDFs as requiring DocuPipe.
+The expected assessment inventory is ten directly parsed XLSX files and 41 PDFs marked
+as requiring DocuPipe.
 
-Generate five distinct, parser-verified XLSX fixtures in the repository root for
-manual upload testing:
+### 5. Ingest and match
 
-```bash
-npm run generate:test-quotes
-```
-
-### 5. Test DocuPipe on representative PDFs
-
-Run the built-in three-PDF canary, which selects representative Berghaan, Cape Crew,
-and Karoo Sound & Stage layouts:
+Start with the representative PDF canary:
 
 ```bash
 npm run ingest -w @quote-intelligence/ingest -- --pdf-limit=3
 ```
 
-Inspect extraction and reconciliation warnings, then process the full folder and
-match the catalog:
+Review audit warnings, then process the corpus and run deterministic catalog matching:
 
 ```bash
 npm run ingest
 npm run catalog:match
 ```
 
-Successfully parsed documents are reused by SHA-256 on later runs, avoiding duplicate
-DocuPipe processing and preserving existing line-item mappings.
+SHA-256 idempotency reuses completed documents for the same tenant and avoids duplicate
+DocuPipe charges.
 
-### 6. Start the application
+### 6. Run the application
 
 ```bash
 npm run dev
@@ -329,7 +271,7 @@ npm run dev
 
 - Web: `http://localhost:5173`
 - API: `http://localhost:3001`
-- API health: `http://localhost:3001/api/health`
+- Health: `http://localhost:3001/api/health`
 
 ### 7. Verify
 
@@ -339,69 +281,53 @@ npm test
 npm run build
 ```
 
-Run the real upload-metrics integration test against the configured Supabase project:
+The networked Supabase fixture test is deliberately separate:
 
 ```bash
 npm run test:integration -w @quote-intelligence/api
 ```
 
-The integration suite generates a unique Protea Events XLSX quote, verifies `/api/stats`
-and `/api/ingestion-runs` before and after ingestion, then removes only records tied to
-the fixture's SHA-256 fingerprint. The regular `npm test` run keeps this networked test
-skipped while still running the API route and frontend React Query synchronization tests.
-
 ## API
+
+Except for health, routes require `Authorization: Bearer <Supabase access token>`.
+Request and response payloads are parsed with contracts in `@quote-intelligence/domain`.
 
 | Method | Route | Purpose |
 |---|---|---|
-| GET | `/api/stats` | Dataset totals and date range |
-| GET | `/api/catalog?q=&page=&pageSize=` | Searchable paginated catalog summaries |
-| GET | `/api/catalog/:id` | Price history, comparison, benchmark, linked lines |
-| GET | `/api/line-items/unmatched` | Conservative non-matches for the review queue |
-| POST | `/api/line-items/:id/reassign` | Reassign or split a match |
-| POST | `/api/ingest/upload` | Ingest one PDF/XLSX quote from multipart field `file` (25 MB max) |
-
-The upload endpoint hashes the file with SHA-256, returns the existing extraction for
-duplicate content, and otherwise parses, persists, audits, and catalog-matches the quote
-before returning its supplier and line-by-line extraction summary.
-
-Reassignment body accepts exactly one:
-
-```json
-{ "targetCatalogItemId": "uuid" }
-```
-
-or:
-
-```json
-{ "newCatalogItemName": "Premium cocktail bartender" }
-```
+| GET | `/api/health` | Public liveness and version |
+| GET | `/api/auth/me` | Validate and return the current identity |
+| GET | `/api/stats` | Tenant totals and date range |
+| GET | `/api/catalog` | Search, category/date filter, sort, and paginate catalog |
+| POST | `/api/catalog` | Create a base catalog profile |
+| GET | `/api/catalog/:id` | Variant-aware history, benchmark, suppliers, and raw lines |
+| DELETE | `/api/catalog/:id` | Soft-deactivate a catalog profile |
+| GET | `/api/line-items/unmatched` | Review unmatched/low-confidence lines |
+| POST | `/api/line-items/:id/reassign` | Write an auditable override and recalculate basis |
+| GET | `/api/suppliers` | Date-filtered supplier performance |
+| POST | `/api/suppliers` | Create a supplier |
+| GET | `/api/suppliers/:id` | Supplier profile, vault, quotes, and exact lines |
+| DELETE | `/api/suppliers/:id` | Soft-deactivate a supplier |
+| GET | `/api/ingestion-audit` | Runs and documents, newest first |
+| POST | `/api/uploads/batch` | Upload up to 20 PDF/XLSX files to the AI pipeline |
+| POST | `/api/ingest/upload` | Backward-compatible single multipart upload |
 
 ## Known limitations
 
-- DocuPipe processing requires user-provided credentials and consumes account credits.
-  The supplied 51-document corpus has been processed successfully with the current
-  asynchronous upload, job-polling, and standardization API.
-- DocuPipe polling is in-process; production ingestion should use a durable queue with
-  retry/backoff, idempotency telemetry, and credit monitoring.
-- The rules cover the supplied corpus, not an unlimited supplier vocabulary.
-- New catalog items created in the correction modal inherit the raw unit and are marked
-  for review; a full catalog editor would ask for category and canonical basis.
-- The modal loads the first 100 catalog entries. Server-side option search is preferable
-  for a much larger catalog.
-- No authentication or multi-tenancy is included, as required by the brief.
-- Geographic, seasonality, and event-size effects are not modeled.
-- Confidence is an evidence heuristic, not inferential statistics.
-- The database integration is verified against Supabase, but automated integration
-  tests use the configured project and clean up their unique SHA-256 fixture. An
-  ephemeral PostgreSQL/Supabase environment is still preferable for parallel CI.
+- DocuPipe and OpenAI calls consume external credits and need durable production queues,
+  retries, concurrency controls, and cost telemetry.
+- Matching rules are deliberately conservative and the review queue remains part of the
+  normal workflow for novel supplier vocabulary.
+- The confidence value is an evidence heuristic, not a statistical confidence interval.
+- Geographic, seasonal, event-size, and negotiated-volume effects are not modeled.
+- Hosted integration tests require a dedicated Supabase test tenant and credentials.
+- The current charting package should be upgraded in a planned dependency pass.
 
 ## With another week
 
-1. Add a durable DocuPipe job queue with retry/backoff, credit tracking, and extraction review.
-2. Add a dedicated low-confidence/unmatched review queue and full catalog editor.
-3. Preserve stable line-item identities across changed document re-ingestion.
-4. Add embedding-based candidate suggestions behind protected-attribute gates.
-5. Add database integration tests against ephemeral Supabase/PostgreSQL.
-6. Add robust statistical intervals once the dataset is large enough.
-7. Add authentication, audit-user identity, deployment, monitoring, and backups.
+1. Move extraction and normalization to a durable job queue with idempotent retries.
+2. Add an administrator catalog/variant editor with merge and rollback workflows.
+3. Add human-approved embedding candidate generation behind protected-attribute gates.
+4. Add ephemeral Supabase integration environments to CI, including cross-tenant RLS tests.
+5. Add monitoring for DocuPipe/OpenAI cost, latency, failures, and model drift.
+6. Model region, seasonality, quantity tiers, and negotiated-volume effects after enough
+   clean evidence exists.
