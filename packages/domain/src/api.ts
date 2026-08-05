@@ -12,7 +12,7 @@ export const CATALOG_CATEGORIES = [
 ] as const;
 
 export const catalogCategorySchema = z.preprocess((value) => {
-  if (typeof value !== "string") return value;
+  if (typeof value !== "string" || !value.trim()) return undefined;
   const normalized = value.trim().toLowerCase();
   return (
     CATALOG_CATEGORIES.find((category) => category.toLowerCase() === normalized) ??
@@ -35,6 +35,18 @@ export const isoDateSchema = z
     const parsed = new Date(`${value}T00:00:00Z`);
     return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
   }, "Use a valid calendar date.");
+
+export const isoDateTimeSchema = z.string().trim().transform((value, context) => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Use a valid date-time."
+    });
+    return z.NEVER;
+  }
+  return parsed.toISOString();
+});
 
 const dateRangeShape = {
   from: isoDateSchema.optional(),
@@ -379,6 +391,12 @@ export interface BatchQuoteUploadResult {
   }>;
 }
 
+export interface CatalogNormalizationRetryResult {
+  documentsRetried: number;
+  linesRetried: number;
+  documentsFailed: number;
+}
+
 export const catalogNormalizationLineSchema = z.object({
   lineItemId: z.string().min(1),
   action: z.enum(["match", "create"]),
@@ -518,7 +536,7 @@ export const catalogSummaryResponseSchema: z.ZodType<CatalogSummary> = z.object(
   minPrice: nullableFiniteNumber,
   maxPrice: nullableFiniteNumber,
   fairPrice: nullableFiniteNumber,
-  lastUploadedAt: z.string().datetime().nullable(),
+  lastUploadedAt: isoDateTimeSchema.nullable(),
   variants: z.array(catalogVariantResponseSchema)
 });
 
@@ -755,3 +773,10 @@ export const batchQuoteUploadResultSchema: z.ZodType<BatchQuoteUploadResult> = z
     })
   )
 });
+
+export const catalogNormalizationRetryResultSchema: z.ZodType<CatalogNormalizationRetryResult> =
+  z.object({
+    documentsRetried: z.number().int().nonnegative(),
+    linesRetried: z.number().int().nonnegative(),
+    documentsFailed: z.number().int().nonnegative()
+  });

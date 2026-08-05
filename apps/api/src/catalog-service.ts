@@ -814,8 +814,8 @@ export class CatalogService {
       const runDocs = documentRows.filter((d) => d.ingestion_run_id === run.id);
       return {
         id: run.id,
-        startedAt: run.started_at,
-        completedAt: run.completed_at,
+        startedAt: isoTimestamp(run.started_at),
+        completedAt: run.completed_at ? isoTimestamp(run.completed_at) : null,
         status: run.status,
         parserVersion: run.parser_version,
         matchingVersion: run.matching_version,
@@ -828,7 +828,7 @@ export class CatalogService {
           sha256: d.sha256,
           status: d.extraction_status,
           warnings: stringArray(d.extraction_warnings),
-          createdAt: d.created_at
+          createdAt: isoTimestamp(d.created_at)
         }))
       };
     });
@@ -912,7 +912,6 @@ export class CatalogService {
       range
     );
   }
-
   private async variantsFor(
     catalogItemIds: string[]
   ): Promise<CatalogVariantRow[]> {
@@ -971,12 +970,14 @@ export class CatalogService {
       minPrice: rates.length ? Math.min(...rates) : null,
       maxPrice: rates.length ? Math.max(...rates) : null,
       fairPrice: buildFairPrice(rows).value,
-      lastUploadedAt:
-        rows
+      lastUploadedAt: (() => {
+        const last = rows
           .map(({ source_created_at }) => source_created_at)
           .filter(Boolean)
           .sort()
-          .at(-1) ?? null,
+          .at(-1);
+        return last ? isoTimestamp(last) : null;
+      })(),
       variants: this.catalogVariants(item.id, allVariants, rows)
     };
   }
@@ -1045,4 +1046,12 @@ export class CatalogService {
       taxBasis: row.tax_basis
     }));
   }
+}
+
+function isoTimestamp(value: string): string {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) {
+    throw new Error(`Database returned an invalid timestamp: ${value}`);
+  }
+  return timestamp.toISOString();
 }

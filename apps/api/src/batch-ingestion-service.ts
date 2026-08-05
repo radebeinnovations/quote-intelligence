@@ -1,15 +1,22 @@
 import {
   CATALOG_CATEGORIES,
+  findCatalogRule,
   normalizeCatalogRate,
   normalizeToExVat,
   validateExtractedDocument,
   type BatchQuoteUploadInput,
   type BatchQuoteUploadResult,
+  type CatalogNormalizationRetryResult,
   type CatalogNormalizationLine,
+  type CatalogRule,
   type ExtractedDocument
 } from "@quote-intelligence/domain";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
+import {
+  reactivateCatalogItemIds,
+  reactivateSourceCatalogItems
+} from "./catalog-reactivation";
 import { DocuPipeBufferClient } from "./docupipe-buffer-client";
 import {
   OpenAICatalogNormalizer,
@@ -17,6 +24,7 @@ import {
   type NormalizationCatalogContext
 } from "./openai-normalizer";
 import { parseXlsxQuoteBuffer } from "./xlsx-buffer-parser";
+import { parsePdfQuoteBufferFast } from "./pdf-fast-parser";
 import { parseSouthAfricanDate } from "./quote-date";
 
 interface RecordWithId {
@@ -32,6 +40,11 @@ interface PersistedLine {
   quantity_raw: number | string;
 }
 
+interface PendingSourceDocument {
+  id: string;
+  extraction_warnings: unknown;
+}
+
 interface BatchIngestionOptions {
   normalizer?: CatalogNormalizer;
   docuPipe?: Pick<DocuPipeBufferClient, "parsePdf">;
@@ -40,6 +53,7 @@ interface BatchIngestionOptions {
 export class BatchIngestionService {
   private readonly normalizer: CatalogNormalizer;
   private readonly docuPipe: Pick<DocuPipeBufferClient, "parsePdf">;
+  private openAICreditsUnavailable = false;
 
   constructor(
     private readonly database: SupabaseClient,
@@ -75,25 +89,26 @@ export class BatchIngestionService {
       .single<RecordWithId>();
     if (runError) throw runError;
 
-    const results: BatchQuoteUploadResult["documents"] = [];
-    for (const file of input.files) {
-      try {
-        const warnings = await this.processFile(run.id, file);
-        results.push({
-          filename: file.filename,
-          status: "parsed",
-          warningCount: warnings.length,
-          error: null
-        });
-      } catch (error) {
-        results.push({
-          filename: file.filename,
-          status: "failed",
-          warningCount: 0,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
+    const results = await Promise.all(
+      input.files.map(async (file) => {
+        try {
+          const warnings = await this.processFile(run.id, file);
+          return {
+            filename: file.filename,
+            status: "parsed" as const,
+            warningCount: warnings.length,
+            error: null
+          };
+        } catch (error) {
+          return {
+            filename: file.filename,
+            status: "failed" as const,
+            warningCount: 0,
+            error: error instanceof Error ? error.message : String(error)
+          };
+        }
+      })
+    );
 
     const errorCount = results.filter(({ status }) => status === "failed").length;
     const { error: finishError } = await this.database
@@ -107,6 +122,46 @@ export class BatchIngestionService {
     if (finishError) throw finishError;
 
     return { runId: run.id, accepted: input.files.length, documents: results };
+  }
+
+  async retryPendingNormalizations(): Promise<CatalogNormalizationRetryResult> {
+    const { data, error } = await this.database
+      .from("source_documents")
+      .select("id,extraction_warnings")
+      .eq("user_id", this.userId)
+      .eq("extraction_status", "parsed")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+
+    const pendingDocuments = ((data ?? []) as PendingSourceDocument[]).filter(
+      (document) => hasPendingNormalization(document.extraction_warnings)
+    );
+    this.openAICreditsUnavailable = pendingDocuments.some((document) =>
+      isOpenAICreditExhaustion(document.extraction_warnings)
+    );
+    const result: CatalogNormalizationRetryResult = {
+      documentsRetried: 0,
+      linesRetried: 0,
+      documentsFailed: 0
+    };
+
+    for (const document of pendingDocuments) {
+      try {
+        result.linesRetried += await this.retrySourceNormalization(document);
+        result.documentsRetried += 1;
+      } catch (retryError) {
+        result.documentsFailed += 1;
+        const warnings = withoutPendingNormalization(document.extraction_warnings);
+        warnings.push(normalizationWarning(retryError));
+        const { error: warningError } = await this.database
+          .from("source_documents")
+          .update({ extraction_warnings: warnings })
+          .eq("id", document.id);
+        if (warningError) throw warningError;
+      }
+    }
+
+    return result;
   }
 
   private async processFile(
@@ -136,12 +191,15 @@ export class BatchIngestionService {
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     const { data: duplicate, error: duplicateError } = await this.database
       .from("source_documents")
-      .select("id,storage_path")
+      .select("id,storage_path,extraction_warnings")
       .eq("user_id", this.userId)
       .eq("sha256", sha256)
-      .maybeSingle<RecordWithId & { storage_path: string | null }>();
+      .maybeSingle<
+        RecordWithId & { storage_path: string | null; extraction_warnings: unknown }
+      >();
     if (duplicateError) throw duplicateError;
     if (duplicate) {
+      const duplicateWarnings: string[] = [];
       if (!duplicate.storage_path) {
         const legacyStoragePath = `${this.userId}/${runId}/${safeFilename(file.filename)}`;
         const { error: legacyStorageError } = await this.database.storage
@@ -161,11 +219,35 @@ export class BatchIngestionService {
             .remove([legacyStoragePath]);
           throw legacySourceError;
         }
-        return [
+        duplicateWarnings.push(
           "Duplicate extraction retained; the original file was added to the private vault."
-        ];
+        );
+      } else {
+        duplicateWarnings.push(
+          "Duplicate document skipped; the existing source was retained."
+        );
       }
-      return ["Duplicate document skipped; the existing source was retained."];
+      const restoredCatalogItems = await reactivateSourceCatalogItems(
+        this.database,
+        this.userId,
+        duplicate.id
+      );
+      if (restoredCatalogItems > 0) {
+        duplicateWarnings.push(
+          `Catalog visibility refreshed for ${restoredCatalogItems} matched service${
+            restoredCatalogItems === 1 ? "" : "s"
+          }.`
+        );
+      }
+      if (hasPendingNormalization(duplicate.extraction_warnings)) {
+        const retriedLines = await this.retrySourceNormalization(duplicate);
+        duplicateWarnings.push(
+          `Catalog normalization retried for ${retriedLines} extracted line${
+            retriedLines === 1 ? "" : "s"
+          }.`
+        );
+      }
+      return duplicateWarnings;
     }
 
     const storagePath = `${this.userId}/${runId}/${safeFilename(file.filename)}`;
@@ -230,11 +312,7 @@ export class BatchIngestionService {
       try {
         await this.normalizeLines(lines);
       } catch (normalizationError) {
-        const warning = `Catalog normalization pending: ${
-          normalizationError instanceof Error
-            ? normalizationError.message
-            : String(normalizationError)
-        }`;
+        const warning = normalizationWarning(normalizationError);
         warnings.push(warning);
         const { error: warningError } = await this.database
           .from("source_documents")
@@ -411,17 +489,29 @@ export class BatchIngestionService {
   }
 
   private async normalizeLines(lines: PersistedLine[]): Promise<void> {
+    if (this.openAICreditsUnavailable) {
+      await this.normalizeLinesWithCatalogRules(lines);
+      return;
+    }
     const context = await this.catalogContext();
-    const response = await this.normalizer.normalize({
-      userId: this.userId,
-      catalog: context,
-      lines: lines.map((line) => ({
-        lineItemId: line.id,
-        description: line.description_raw,
-        unit: line.unit_raw,
-        quantity: Number(line.quantity_raw)
-      }))
-    });
+    const response = await this.normalizer
+      .normalize({
+        userId: this.userId,
+        catalog: context,
+        lines: lines.map((line) => ({
+          lineItemId: line.id,
+          description: line.description_raw,
+          unit: line.unit_raw,
+          quantity: Number(line.quantity_raw)
+        }))
+      })
+      .catch(async (error: unknown) => {
+        if (!isOpenAICreditExhaustion(error)) throw error;
+        this.openAICreditsUnavailable = true;
+        await this.normalizeLinesWithCatalogRules(lines);
+        return null;
+      });
+    if (!response) return;
     const normalizedByLine = new Map(
       response.lines.map((line) => [line.lineItemId, line])
     );
@@ -463,6 +553,152 @@ export class BatchIngestionService {
     }
   }
 
+  private async normalizeLinesWithCatalogRules(
+    lines: PersistedLine[]
+  ): Promise<void> {
+    const catalogCache = new Map<string, string>();
+    for (const line of lines) {
+      const rule = findCatalogRule(line.description_raw);
+      if (!rule) {
+        const { error } = await this.database.from("catalog_matches").insert({
+          user_id: this.userId,
+          line_item_id: line.id,
+          catalog_item_id: null,
+          variant_id: null,
+          status: "unmatched",
+          method: null,
+          confidence: null,
+          reason_codes: ["NO_CONSERVATIVE_RULE", "OPENAI_CREDITS_UNAVAILABLE"]
+        });
+        if (error) throw error;
+        continue;
+      }
+
+      let catalogItemId = catalogCache.get(rule.name);
+      if (!catalogItemId) {
+        catalogItemId = await this.upsertRuleCatalogItem(rule);
+        catalogCache.set(rule.name, catalogItemId);
+      }
+      const normalized = normalizeCatalogRate(
+        line.unit_rate_ex_vat === null ? null : Number(line.unit_rate_ex_vat),
+        line.unit_raw,
+        rule.canonicalBasis
+      );
+      const { error: matchError } = await this.database
+        .from("catalog_matches")
+        .insert({
+          user_id: this.userId,
+          line_item_id: line.id,
+          catalog_item_id: catalogItemId,
+          variant_id: null,
+          status: "matched",
+          method: "exact_rule",
+          confidence: 0.98,
+          model_version: null,
+          reason_codes: [
+            "ALIASED_DESCRIPTION",
+            "PROTECTED_ATTRIBUTES_COMPATIBLE",
+            "OPENAI_CREDITS_UNAVAILABLE"
+          ],
+          normalization_metadata: {
+            fallback: "catalog-rules-1.0.0",
+            reason: "OpenAI API credits unavailable"
+          }
+        });
+      if (matchError) throw matchError;
+
+      const { error: normalizationError } = await this.database
+        .from("price_normalizations")
+        .upsert(
+          {
+            user_id: this.userId,
+            line_item_id: line.id,
+            variant_id: null,
+            canonical_rate_ex_vat: normalized.canonicalRate,
+            canonical_basis: normalized.canonicalBasis,
+            estimated: normalized.estimated,
+            comparable: normalized.comparable,
+            explanation: normalized.explanation
+          },
+          { onConflict: "line_item_id" }
+        );
+      if (normalizationError) throw normalizationError;
+    }
+  }
+
+  private async upsertRuleCatalogItem(rule: CatalogRule): Promise<string> {
+    const { data, error } = await this.database
+      .from("catalog_items")
+      .upsert(
+        {
+          user_id: this.userId,
+          name: rule.name,
+          category: canonicalCategory(rule.category),
+          description: rule.description,
+          canonical_unit: rule.canonicalUnit,
+          canonical_pricing_basis: rule.canonicalBasis,
+          attributes: { generatedBy: "catalog-rules-1.0.0" },
+          active: true
+        },
+        { onConflict: "user_id,name" }
+      )
+      .select("id")
+      .single<RecordWithId>();
+    if (error) throw error;
+    return data.id;
+  }
+
+  private async retrySourceNormalization(
+    document: PendingSourceDocument
+  ): Promise<number> {
+    const { data: quotes, error: quoteError } = await this.database
+      .from("quotes")
+      .select("id")
+      .eq("user_id", this.userId)
+      .eq("source_document_id", document.id)
+      .limit(1);
+    if (quoteError) throw quoteError;
+    const quote = ((quotes ?? []) as RecordWithId[])[0];
+    if (!quote) throw new Error("The parsed source document has no persisted quote.");
+
+    const { data: lines, error: lineError } = await this.database
+      .from("quote_line_items")
+      .select(
+        "id,source_row,unit_raw,unit_rate_ex_vat,description_raw,quantity_raw"
+      )
+      .eq("user_id", this.userId)
+      .eq("quote_id", quote.id);
+    if (lineError) throw lineError;
+    const lineRows = (lines ?? []) as PersistedLine[];
+    const lineIds = lineRows.map(({ id }) => id);
+    const { data: matches, error: matchError } = lineIds.length
+      ? await this.database
+          .from("catalog_matches")
+          .select("line_item_id")
+          .eq("user_id", this.userId)
+          .in("line_item_id", lineIds)
+      : { data: [], error: null };
+    if (matchError) throw matchError;
+    const matchedLineIds = new Set(
+      ((matches ?? []) as Array<{ line_item_id: string }>).map(
+        ({ line_item_id }) => line_item_id
+      )
+    );
+    const pendingLines = lineRows.filter(({ id }) => !matchedLineIds.has(id));
+    await this.normalizeLines(pendingLines);
+
+    const { error: warningError } = await this.database
+      .from("source_documents")
+      .update({
+        extraction_warnings: withoutPendingNormalization(
+          document.extraction_warnings
+        )
+      })
+      .eq("id", document.id);
+    if (warningError) throw warningError;
+    return pendingLines.length;
+  }
+
   private async persistNormalization(
     line: PersistedLine,
     normalized: CatalogNormalizationLine,
@@ -486,8 +722,10 @@ export class BatchIngestionService {
         .ilike("name", normalized.baseName)
         .maybeSingle<RecordWithId>();
       if (existingError) throw existingError;
-      if (existing) catalogItemId = existing.id;
-      else {
+      if (existing) {
+        catalogItemId = existing.id;
+        await reactivateCatalogItemIds(this.database, this.userId, [existing.id]);
+      } else {
         const { data: created, error } = await this.database
           .from("catalog_items")
           .insert({
@@ -617,6 +855,43 @@ export class BatchIngestionService {
         }))
     }));
   }
+}
+
+const NORMALIZATION_WARNING_PREFIX = "Catalog normalization pending:";
+
+function warningStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((warning): warning is string => typeof warning === "string")
+    : [];
+}
+
+function hasPendingNormalization(value: unknown): boolean {
+  return warningStrings(value).some((warning) =>
+    warning.startsWith(NORMALIZATION_WARNING_PREFIX)
+  );
+}
+
+function withoutPendingNormalization(value: unknown): string[] {
+  return warningStrings(value).filter(
+    (warning) => !warning.startsWith(NORMALIZATION_WARNING_PREFIX)
+  );
+}
+
+function normalizationWarning(error: unknown): string {
+  return `${NORMALIZATION_WARNING_PREFIX} ${
+    error instanceof Error ? error.message : String(error)
+  }`;
+}
+
+export function isOpenAICreditExhaustion(value: unknown): boolean {
+  const message = Array.isArray(value)
+    ? warningStrings(value).join(" ")
+    : value instanceof Error
+      ? value.message
+      : String(value);
+  return /credit_balance_exhausted|insufficient_quota|no credits remaining/i.test(
+    message
+  );
 }
 
 function safeFilename(filename: string): string {

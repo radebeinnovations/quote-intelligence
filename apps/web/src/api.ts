@@ -5,6 +5,7 @@ import type {
   DateRangeQuery,
   BatchQuoteUploadInput,
   BatchQuoteUploadResult,
+  CatalogNormalizationRetryResult,
   CatalogSummary,
   CreateCatalogItemInput,
   CreateSupplierInput,
@@ -21,9 +22,21 @@ import type {
 } from "@quote-intelligence/domain";
 
 let accessToken: string | null = null;
+let authRecovery: ApiAuthRecovery | null = null;
+let refreshPromise: Promise<string | null> | null = null;
+
+interface ApiAuthRecovery {
+  refresh: () => Promise<string | null>;
+  invalidate: () => Promise<void>;
+}
 
 export function setApiAccessToken(token: string | null): void {
   accessToken = token;
+}
+
+export function setApiAuthRecovery(recovery: ApiAuthRecovery | null): void {
+  authRecovery = recovery;
+  if (!recovery) refreshPromise = null;
 }
 
 interface CatalogRequestOptions extends DateRangeQuery {
@@ -43,15 +56,29 @@ function addDateRange(params: URLSearchParams, range: DateRangeQuery): void {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
+  const send = () => {
+    const headers = new Headers(init?.headers);
+    if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+    return fetch(path, { ...init, headers });
+  };
+
+  let response = await send();
+  if (response.status === 401 && accessToken && authRecovery) {
+    refreshPromise ??= authRecovery.refresh().finally(() => {
+      refreshPromise = null;
+    });
+    const refreshedToken = await refreshPromise;
+    if (refreshedToken) {
+      setApiAccessToken(refreshedToken);
+      response = await send();
+    }
+    if (response.status === 401) {
+      await authRecovery.invalidate();
+    }
   }
-  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
-  const response = await fetch(path, {
-    ...init,
-    headers
-  });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new Error(payload?.error ?? `Request failed with status ${response.status}.`);
@@ -123,6 +150,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  retryCatalogNormalization: async () => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 90_000);
+    try {
+      return await request<CatalogNormalizationRetryResult>(
+        "/api/uploads/retry-normalization",
+        { method: "POST", signal: controller.signal }
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error(
+          "Catalog normalization exceeded 90 seconds. Check Ingestion Audit before retrying."
+        );
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  },
   uploadQuote: (file: File, onProgress: (progress: QuoteUploadProgress) => void) =>
     uploadQuote(file, onProgress)
 };

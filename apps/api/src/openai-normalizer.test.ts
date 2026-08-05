@@ -11,6 +11,7 @@ describe("OpenAI catalog normalization", () => {
       expect(request).toMatchObject({
         model: "gpt-4o-mini",
         text: {
+          verbosity: "medium",
           format: {
             type: "json_schema",
             name: "quote_catalog_normalization",

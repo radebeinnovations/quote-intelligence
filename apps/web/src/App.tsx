@@ -104,7 +104,18 @@ function AppContent() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [route, setRoute] = useState<Route>(currentRoute);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const stats = useQuery({ queryKey: ["stats"], queryFn: api.stats });
+
+  async function handleGlobalRefresh() {
+    setIsRefreshing(true);
+    try {
+      await queryClient.invalidateQueries();
+      await queryClient.refetchQueries();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -193,6 +204,15 @@ function AppContent() {
         <header className="topbar">
           <div><p>Procurement workspace</p><span>{dateRange}</span></div>
           <div className="topbar-actions">
+            <button
+              className={`button secondary compact ${isRefreshing ? "refreshing" : ""}`}
+              onClick={handleGlobalRefresh}
+              disabled={isRefreshing}
+              title="Refresh catalog, suppliers, and workspace metrics"
+            >
+              <span className="refresh-icon">🔄</span>
+              <span>{isRefreshing ? "Refreshing..." : "Refresh"}</span>
+            </button>
             <button className="button primary compact" onClick={() => setUploadOpen(true)}>
               + Upload quotes
             </button>
@@ -252,6 +272,8 @@ function AppContent() {
                 navigate({ name: "detail", catalogId, variantIds })
               }
               onUpload={() => setUploadOpen(true)}
+              onRefresh={handleGlobalRefresh}
+              hasExtractedLines={(stats.data?.totalLineItems ?? 0) > 0}
             />
           )}
         </main>
@@ -259,8 +281,8 @@ function AppContent() {
       {uploadOpen && (
         <UploadQuoteModal
           onClose={() => setUploadOpen(false)}
-          onUploaded={() => {
-            void queryClient.invalidateQueries();
+          onUploaded={async () => {
+            await handleGlobalRefresh();
           }}
         />
       )}

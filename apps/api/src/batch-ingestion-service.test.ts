@@ -1,6 +1,9 @@
 import type { CatalogNormalizationLine } from "@quote-intelligence/domain";
 import { describe, expect, it } from "vitest";
-import { protectedAttributeConflict } from "./batch-ingestion-service";
+import {
+  isOpenAICreditExhaustion,
+  protectedAttributeConflict
+} from "./batch-ingestion-service";
 
 function normalized(overrides: Partial<CatalogNormalizationLine> = {}): CatalogNormalizationLine {
   return {
@@ -24,6 +27,15 @@ describe("AI normalization safety guard", () => {
     expect(
       protectedAttributeConflict("White Gazebo 3m x 3m per day", normalized())
     ).toBeNull();
+  });
+
+  it("recognizes exhausted OpenAI credits without treating rate limits as quota exhaustion", () => {
+    expect(
+      isOpenAICreditExhaustion(
+        new Error("OpenAI failed: credit_balance_exhausted (insufficient_quota)")
+      )
+    ).toBe(true);
+    expect(isOpenAICreditExhaustion(new Error("rate_limit_exceeded"))).toBe(false);
   });
 
   it("rejects a gazebo size merge that drops the source dimension", () => {

@@ -141,4 +141,43 @@ describe("catalog database resilience", () => {
 
     await expect(new CatalogService(database).suppliersPerformance({})).resolves.toEqual([]);
   });
+
+  it("normalizes Supabase SQL timestamps to the API ISO datetime contract", async () => {
+    const database = databaseWithResults({
+      ingestion_runs: [{
+        data: [{
+          id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-08-05 07:04:33.879+00",
+          completed_at: "2026-08-05 07:05:18.000+00",
+          status: "completed",
+          parser_version: "tenant-upload-v1",
+          matching_version: "openai-structured-v1",
+          document_count: 1,
+          error_count: 0
+        }],
+        error: null
+      }],
+      source_documents: [{
+        data: [{
+          id: "22222222-2222-4222-8222-222222222222",
+          ingestion_run_id: "11111111-1111-4111-8111-111111111111",
+          filename: "quote.xlsx",
+          file_type: "xlsx",
+          sha256: "a".repeat(64),
+          extraction_status: "parsed",
+          extraction_warnings: [],
+          created_at: "2026-08-05 07:04:33.879+00"
+        }],
+        error: null
+      }]
+    });
+
+    await expect(new CatalogService(database).ingestionAudit()).resolves.toMatchObject([
+      {
+        startedAt: "2026-08-05T07:04:33.879Z",
+        completedAt: "2026-08-05T07:05:18.000Z",
+        documents: [{ createdAt: "2026-08-05T07:04:33.879Z" }]
+      }
+    ]);
+  });
 });

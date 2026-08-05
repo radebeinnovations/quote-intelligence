@@ -1,4 +1,4 @@
-import type { Session, User } from "@supabase/supabase-js";
+import type { Session, SupabaseClient, User } from "@supabase/supabase-js";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
@@ -10,7 +10,7 @@ import {
   type FormEvent,
   type ReactNode
 } from "react";
-import { setApiAccessToken } from "./api";
+import { setApiAccessToken, setApiAuthRecovery } from "./api";
 import { browserSupabase } from "./supabase";
 
 interface AuthContextValue {
@@ -19,6 +19,31 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+type SessionAuthClient = Pick<
+  SupabaseClient["auth"],
+  "getSession" | "getUser" | "refreshSession" | "signOut"
+>;
+
+export async function resolveVerifiedSession(
+  auth: SessionAuthClient
+): Promise<Session | null> {
+  const { data: stored } = await auth.getSession();
+  if (!stored.session) return null;
+
+  const { data: verified, error: verificationError } = await auth.getUser(
+    stored.session.access_token
+  );
+  if (!verificationError && verified.user) return stored.session;
+
+  const { data: refreshed, error: refreshError } = await auth.refreshSession(
+    stored.session
+  );
+  if (!refreshError && refreshed.session) return refreshed.session;
+
+  await auth.signOut({ scope: "local" });
+  return null;
+}
 
 export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
@@ -37,21 +62,49 @@ export function AuthGate({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    void browserSupabase.auth.getSession().then(({ data }) => {
-      userIdRef.current = data.session?.user.id ?? null;
-      setSession(data.session);
-      setApiAccessToken(data.session?.access_token ?? null);
-      setLoading(false);
-    });
-    const { data } = browserSupabase.auth.onAuthStateChange((_event, next) => {
+
+    const supabase = browserSupabase;
+    let active = true;
+    const applySession = (next: Session | null) => {
+      if (!active) return;
       const nextUserId = next?.user.id ?? null;
       if (userIdRef.current !== nextUserId) queryClient.clear();
       userIdRef.current = nextUserId;
       setSession(next);
       setApiAccessToken(next?.access_token ?? null);
       setLoading(false);
+    };
+
+    setApiAuthRecovery({
+      refresh: async () => {
+        const { data, error } = await supabase.auth.refreshSession();
+        if (error || !data.session) return null;
+        applySession(data.session);
+        return data.session.access_token;
+      },
+      invalidate: async () => {
+        queryClient.clear();
+        setApiAccessToken(null);
+        await supabase.auth.signOut({ scope: "local" });
+        applySession(null);
+      }
     });
-    return () => data.subscription.unsubscribe();
+
+    void resolveVerifiedSession(supabase.auth)
+      .then(applySession)
+      .catch(async () => {
+        await supabase.auth.signOut({ scope: "local" });
+        applySession(null);
+      });
+
+    const { data } = supabase.auth.onAuthStateChange((event, next) => {
+      if (event !== "INITIAL_SESSION") applySession(next);
+    });
+    return () => {
+      active = false;
+      setApiAuthRecovery(null);
+      data.subscription.unsubscribe();
+    };
   }, [queryClient]);
 
   const context = useMemo<AuthContextValue | null>(

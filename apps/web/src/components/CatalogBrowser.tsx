@@ -8,10 +8,7 @@ import {
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { downloadCsv } from "../csv";
-import {
-  resolveDateRange,
-  type DateRangePreset
-} from "../date-range";
+import { resolveDateRange, type DateRangePreset } from "../date-range";
 import { formatDate, formatNumber, zar } from "../format";
 import { CreateCatalogItemModal } from "./CreateCatalogItemModal";
 import { DateRangeSelector } from "./DateRangeSelector";
@@ -20,12 +17,12 @@ const sortOptions: Array<{
   value: `${CatalogSortBy}:${SortOrder}`;
   label: string;
 }> = [
-  { value: "name:asc", label: "Name: A–Z" },
-  { value: "name:desc", label: "Name: Z–A" },
-  { value: "fairPrice:asc", label: "Fair price: Low–High" },
-  { value: "fairPrice:desc", label: "Fair price: High–Low" },
-  { value: "supplierCount:desc", label: "Suppliers: Most–Least" },
-  { value: "supplierCount:asc", label: "Suppliers: Least–Most" }
+  { value: "name:asc", label: "Name: A-Z" },
+  { value: "name:desc", label: "Name: Z-A" },
+  { value: "fairPrice:asc", label: "Fair price: Low-High" },
+  { value: "fairPrice:desc", label: "Fair price: High-Low" },
+  { value: "supplierCount:desc", label: "Suppliers: Most-Least" },
+  { value: "supplierCount:asc", label: "Suppliers: Least-Most" }
 ];
 
 function categoryLabel(category: CatalogCategory): string {
@@ -34,10 +31,14 @@ function categoryLabel(category: CatalogCategory): string {
 
 export function CatalogBrowser({
   onSelect,
-  onUpload = () => undefined
+  onUpload = () => undefined,
+  onRefresh,
+  hasExtractedLines = false
 }: {
   onSelect: (id: string, variantIds?: string[]) => void;
   onUpload?: () => void;
+  onRefresh?: () => Promise<void>;
+  hasExtractedLines?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
@@ -48,6 +49,9 @@ export function CatalogBrowser({
   const [dateRangePreset, setDateRangePreset] =
     useState<DateRangePreset>("all-time");
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [normalizationRetrying, setNormalizationRetrying] = useState(false);
+  const [normalizationError, setNormalizationError] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setQuery(input.trim()), 250);
@@ -108,6 +112,20 @@ export function CatalogBrowser({
     setSortOrder(nextSortOrder);
   }
 
+  async function handleRefresh() {
+    setIsRefreshing(true);
+    try {
+      if (onRefresh) {
+        await onRefresh();
+      } else {
+        await queryClient.invalidateQueries();
+        await queryClient.refetchQueries({ queryKey: ["catalog"] });
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
   async function handleDelete(itemId: string, itemName: string) {
     if (!window.confirm(
       `Deactivate "${itemName}"? Historical price observations remain in the audit trail.`
@@ -121,7 +139,39 @@ export function CatalogBrowser({
         queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] })
       ]);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Failed to deactivate service.");
+      window.alert(
+        error instanceof Error ? error.message : "Failed to deactivate service."
+      );
+    }
+  }
+
+  async function retryCatalogNormalization() {
+    setNormalizationRetrying(true);
+    setNormalizationError(null);
+    try {
+      const result = await api.retryCatalogNormalization();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["catalog"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats"] }),
+        queryClient.invalidateQueries({ queryKey: ["suppliers"] }),
+        queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] }),
+        queryClient.invalidateQueries({ queryKey: ["ingestion-audit"] })
+      ]);
+      if (result.documentsFailed > 0) {
+        setNormalizationError(
+          `${result.documentsFailed} document${
+            result.documentsFailed === 1 ? "" : "s"
+          } still require attention. See Ingestion Audit for details.`
+        );
+      }
+    } catch (error) {
+      setNormalizationError(
+        error instanceof Error
+          ? error.message
+          : "Catalog normalization could not be retried."
+      );
+    } finally {
+      setNormalizationRetrying(false);
     }
   }
 
@@ -134,10 +184,26 @@ export function CatalogBrowser({
           <p>Every price below is normalized to an ex-VAT comparison basis.</p>
         </div>
         <div className="page-actions">
+          <button
+            className={`button secondary compact ${
+              isRefreshing || catalog.isFetching ? "refreshing" : ""
+            }`}
+            onClick={() => void handleRefresh()}
+            disabled={isRefreshing || catalog.isFetching}
+            title="Refresh catalog data and metrics"
+          >
+            <span className="refresh-icon" aria-hidden="true">↻</span>
+            <span>
+              {isRefreshing || catalog.isFetching ? "Refreshing..." : "Refresh"}
+            </span>
+          </button>
           <button className="button primary compact" onClick={onUpload}>
             + Upload quotes
           </button>
-          <button className="button secondary compact" onClick={() => setShowCreateModal(true)}>
+          <button
+            className="button secondary compact"
+            onClick={() => setShowCreateModal(true)}
+          >
             + Add service
           </button>
           <button
@@ -184,6 +250,7 @@ export function CatalogBrowser({
             <select
               value={`${sortBy}:${sortOrder}`}
               onChange={(event) => selectSort(event.target.value)}
+              aria-label="Sort"
             >
               {sortOptions.map((option) => (
                 <option value={option.value} key={option.value}>
@@ -230,26 +297,44 @@ export function CatalogBrowser({
           <div className="bootstrap-callout panel">
             <span className="bootstrap-icon" aria-hidden="true">✦</span>
             <div>
-              <p className="eyebrow">Empty workspace</p>
-              <h3>Bootstrap your catalog</h3>
-              <p>
-                Drop a batch of supplier PDF/XLSX quotes. DocuPipe extracts the raw
-                lines and AI normalization creates deduplicated base profiles with
-                filterable variants.
+              <p className="eyebrow">
+                {hasExtractedLines ? "Normalization pending" : "Empty workspace"}
               </p>
+              <h3>
+                {hasExtractedLines
+                  ? "Finish building your catalog"
+                  : "Bootstrap your catalog"}
+              </h3>
+              <p>
+                {hasExtractedLines
+                  ? "Your quote lines are safely stored. Retry catalog normalization to create comparable services."
+                  : "Drop a batch of supplier PDF/XLSX quotes. DocuPipe extracts the raw lines and normalization creates deduplicated base profiles with filterable variants."}
+              </p>
+              {normalizationError && (
+                <p className="field-error" role="alert">{normalizationError}</p>
+              )}
             </div>
-            <button className="button primary" onClick={onUpload}>
-              Upload your first quotes
+            <button
+              className="button primary"
+              onClick={
+                hasExtractedLines
+                  ? () => void retryCatalogNormalization()
+                  : onUpload
+              }
+              disabled={normalizationRetrying}
+            >
+              {hasExtractedLines
+                ? normalizationRetrying
+                  ? "Normalizing..."
+                  : "Retry catalog normalization"
+                : "Upload your first quotes"}
             </button>
           </div>
         ))}
 
       <div className="catalog-grid">
         {catalog.data?.items.map((item) => (
-          <article
-            className="catalog-card"
-            key={item.id}
-          >
+          <article className="catalog-card" key={item.id}>
             <button
               className="catalog-card-hitbox"
               onClick={() => onSelect(item.id)}
@@ -270,14 +355,20 @@ export function CatalogBrowser({
               </div>
             </div>
             <h3 className="catalog-card-content">{item.name}</h3>
-            <p className="catalog-card-content">{item.description ?? "Canonical service with linked supplier pricing."}</p>
+            <p className="catalog-card-content">
+              {item.description ??
+                "Canonical service with linked supplier pricing."}
+            </p>
             <small className="catalog-uploaded-date catalog-card-content">
               {item.lastUploadedAt
                 ? `Last uploaded ${formatDate(item.lastUploadedAt)}`
                 : "No uploaded quote date"}
             </small>
             {item.variants.length > 0 && (
-              <div className="variant-preview catalog-card-content" aria-label={`${item.name} variants`}>
+              <div
+                className="variant-preview catalog-card-content"
+                aria-label={`${item.name} variants`}
+              >
                 {item.variants.slice(0, 4).map((variant) => (
                   <button
                     type="button"
@@ -290,13 +381,19 @@ export function CatalogBrowser({
                   </button>
                 ))}
                 {item.variants.length > 4 && (
-                  <span className="variant-pill">+{item.variants.length - 4}</span>
+                  <span className="variant-pill">
+                    +{item.variants.length - 4}
+                  </span>
                 )}
               </div>
             )}
             <div className="fair-price-row catalog-card-content">
               <span>Fair price</span>
-              <strong>{item.fairPrice === null ? "Insufficient data" : zar.format(item.fairPrice)}</strong>
+              <strong>
+                {item.fairPrice === null
+                  ? "Insufficient data"
+                  : zar.format(item.fairPrice)}
+              </strong>
               <small>per {item.primaryUnit}</small>
             </div>
             <dl className="card-metrics catalog-card-content">
@@ -320,13 +417,14 @@ export function CatalogBrowser({
           </article>
         ))}
       </div>
+
       {showCreateModal && (
         <CreateCatalogItemModal
           onClose={() => setShowCreateModal(false)}
-          onSaved={() => {
+          onSaved={async () => {
             setShowCreateModal(false);
-            void queryClient.invalidateQueries({ queryKey: ["catalog"] });
-            void queryClient.invalidateQueries({ queryKey: ["stats"] });
+            await queryClient.invalidateQueries();
+            await queryClient.refetchQueries({ queryKey: ["catalog"] });
           }}
         />
       )}

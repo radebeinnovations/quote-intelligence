@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { isoDateTimeSchema } from "./api";
 import { calculateFairPrice } from "./fair-price";
 import { normalizeToExVat } from "./money";
 import { normalizeCatalogRate, normalizeStaffingRate } from "./units";
+
+describe("API date-time normalization", () => {
+  it("converts Supabase SQL timestamps to strict ISO date-times", () => {
+    expect(isoDateTimeSchema.parse("2026-08-05 07:04:33.879+00")).toBe(
+      "2026-08-05T07:04:33.879Z"
+    );
+  });
+});
 
 describe("tax normalization", () => {
   it("converts VAT-inclusive prices to ex-VAT", () => {

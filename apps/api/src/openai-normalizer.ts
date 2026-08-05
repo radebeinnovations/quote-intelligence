@@ -168,7 +168,8 @@ export class OpenAICatalogNormalizer implements CatalogNormalizer {
             strict: true,
             schema: responseJsonSchema
           },
-          verbosity: "low"
+          // gpt-4o-mini only accepts the default/medium verbosity level.
+          verbosity: "medium"
         }
       })
     });

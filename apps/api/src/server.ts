@@ -1,12 +1,12 @@
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import {
-  createAuthenticatedDatabaseClient,
-  createServiceDatabaseClient
+  createAuthenticatedDatabaseClient
 } from "@quote-intelligence/database";
 import {
   batchQuoteUploadSchema,
   batchQuoteUploadResultSchema,
+  catalogNormalizationRetryResultSchema,
   authMeResponseSchema,
   createCatalogItemSchema,
   createSupplierSchema,
@@ -86,7 +86,6 @@ export async function buildServer(options: BuildServerOptions = {}) {
     logger: options.logger ?? true,
     bodyLimit: 100 * 1024 * 1024
   });
-  const authAdmin = options.catalog ? null : createServiceDatabaseClient();
   const configuredOrigins = [
     "http://localhost:5173",
     "http://localhost:5174",
@@ -174,13 +173,32 @@ export async function buildServer(options: BuildServerOptions = {}) {
       await reply.status(401).send({ error: "Authentication is required." });
       return null;
     }
-    const { data, error } = await authAdmin!.auth.getUser(token);
+    const database = createAuthenticatedDatabaseClient(token);
+    const { data, error } = await database.auth.getUser(token);
     if (error || !data.user) {
+      request.log.warn(
+        {
+          authError: error
+            ? {
+                name: error.name,
+                message: error.message,
+                status: error.status,
+                code: error.code
+              }
+            : { message: "Supabase returned no user for the access token." }
+        },
+        "Supabase rejected an authenticated API request."
+      );
+      if (error?.name === "AuthRetryableFetchError") {
+        await reply.status(503).send({
+          error: "Authentication service is temporarily unavailable."
+        });
+        return null;
+      }
       await reply.status(401).send({ error: "The access token is invalid or expired." });
       return null;
     }
 
-    const database = createAuthenticatedDatabaseClient(token);
     return {
       catalog: new CatalogService(database, data.user.id),
       database,
@@ -380,6 +398,23 @@ export async function buildServer(options: BuildServerOptions = {}) {
     );
     const result = await ingestion.ingest(input);
     return reply.status(202).send(batchQuoteUploadResultSchema.parse(result));
+  });
+
+  app.post("/api/uploads/retry-normalization", async (request, reply) => {
+    const services = await servicesFor(request, reply);
+    if (!services) return;
+    if (!services.database) {
+      return reply.status(501).send({
+        error: "Catalog normalization is unavailable in test mode."
+      });
+    }
+    const ingestion = new BatchIngestionService(
+      services.database,
+      services.userId
+    );
+    return catalogNormalizationRetryResultSchema.parse(
+      await ingestion.retryPendingNormalizations()
+    );
   });
 
   return app;

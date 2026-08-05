@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CatalogSummary, PaginatedCatalogResponse } from "@quote-intelligence/domain";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { CatalogBrowser } from "./CatalogBrowser";
 
@@ -45,6 +45,8 @@ const catalogPage: PaginatedCatalogResponse = {
 };
 
 describe("catalog filters", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("forwards category and multi-column sorting to the API", async () => {
     const catalog = vi.spyOn(api, "catalog").mockResolvedValue(catalogPage);
     const client = new QueryClient({
@@ -82,5 +84,35 @@ describe("catalog filters", () => {
         sortOrder: "desc"
       })
     );
+  });
+
+  it("retries pending normalization only after explicit user action", async () => {
+    vi.spyOn(api, "catalog").mockResolvedValue({
+      items: [],
+      page: 1,
+      pageSize: 50,
+      total: 0,
+      totalPages: 0
+    });
+    const retry = vi.spyOn(api, "retryCatalogNormalization").mockResolvedValue({
+      documentsRetried: 1,
+      linesRetried: 5,
+      documentsFailed: 0
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } }
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <CatalogBrowser onSelect={vi.fn()} hasExtractedLines />
+      </QueryClientProvider>
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(retry).not.toHaveBeenCalled();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Retry catalog normalization" })
+    );
+    await waitFor(() => expect(retry).toHaveBeenCalledOnce());
   });
 });

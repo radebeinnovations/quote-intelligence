@@ -14,9 +14,11 @@ import {
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describeUnknownError, isDatabaseError } from "./error-utils";
 import { createHash } from "node:crypto";
+import { reactivateSourceCatalogItems } from "./catalog-reactivation";
 import { DocuPipeBufferClient } from "./docupipe-buffer-client";
 import { parseSouthAfricanDate } from "./quote-date";
 import { parseXlsxQuoteBuffer } from "./xlsx-buffer-parser";
+import { parsePdfQuoteBufferFast } from "./pdf-fast-parser";
 
 const PARSER_VERSION = "upload-1.0.0";
 const MATCHING_VERSION = "catalog-rules-1.0.0";
@@ -131,12 +133,25 @@ export class UploadIngestionService implements UploadIngestionApi {
         );
       }
       const document = parsedDocument.data;
+      const restoredCatalogItems = await reactivateSourceCatalogItems(
+        this.database,
+        this.userId,
+        existing.id
+      );
+      const warnings = stringWarnings(existing.extraction_warnings);
+      if (restoredCatalogItems > 0) {
+        warnings.push(
+          `Catalog visibility refreshed for ${restoredCatalogItems} matched service${
+            restoredCatalogItems === 1 ? "" : "s"
+          }.`
+        );
+      }
       return this.loadSummary({
         sourceDocumentId: existing.id,
         filename: existing.filename,
         sha256,
         document,
-        warnings: stringWarnings(existing.extraction_warnings),
+        warnings,
         idempotent: true
       });
     }
@@ -237,6 +252,9 @@ export class UploadIngestionService implements UploadIngestionApi {
 
   private async parse(input: UploadIngestionInput): Promise<ExtractedDocument> {
     if (input.fileType === "xlsx") return parseXlsxQuoteBuffer(input.contents);
+    const fastPdf = parsePdfQuoteBufferFast(input.contents);
+    if (fastPdf) return fastPdf;
+
     const apiKey = process.env.DOCUPIPE_API_KEY;
     const parseEndpoint = process.env.DOCUPIPE_PARSE_ENDPOINT;
     if (!apiKey || !parseEndpoint) {
@@ -327,9 +345,7 @@ export class UploadIngestionService implements UploadIngestionApi {
     return requireData(data, "Creating a source document").id;
   }
 
-  private async retrySourceDocument(
-    sourceDocumentId: string
-  ): Promise<string> {
+  private async retrySourceDocument(sourceDocumentId: string): Promise<string> {
     const { error } = await this.database
       .from("source_documents")
       .update({
@@ -414,25 +430,29 @@ export class UploadIngestionService implements UploadIngestionApi {
         subtotal_raw: quote.subtotal ?? null,
         vat_amount_raw: quote.vatAmount ?? null,
         total_raw: quote.total ?? null,
-        validation_status: warnings.length ? "warning" : "valid",
-        validation_warnings: warnings
+        notes: quote.notes ?? document.notes ?? [],
+        extraction_warnings: warnings
       })
       .select("id")
       .single<RecordWithId>();
     if (error) throw error;
-    await this.reconcileRevisions(supplierId, quoteNumber);
-    return requireData(data, "Creating a quote").id;
+    const quoteId = requireData(data, "Creating a quote").id;
+
+    await this.updateRevisions(supplierId, quoteNumber);
+    return quoteId;
   }
 
-  private async reconcileRevisions(supplierId: string, quoteNumber: string): Promise<void> {
+  private async updateRevisions(supplierId: string, quoteNumber: string): Promise<void> {
     const { data, error } = await this.database
       .from("quotes")
-      .select("id,revision_number")
+      .select("id")
+      .eq("user_id", this.userId)
       .eq("supplier_id", supplierId)
       .eq("quote_number", quoteNumber)
-      .order("revision_number", { ascending: false });
+      .order("revision_number", { ascending: false })
+      .order("created_at", { ascending: false });
     if (error) throw error;
-    const revisions = (data ?? []) as Array<{ id: string; revision_number: number }>;
+    const revisions = (data ?? []) as RecordWithId[];
     const current = revisions[0];
     if (!current) return;
 
