@@ -29,6 +29,7 @@ export interface CatalogNormalizer {
     userId: string;
     lines: NormalizationSourceLine[];
     catalog: NormalizationCatalogContext[];
+    existingCategories: string[];
   }): Promise<CatalogNormalizationResponse>;
 }
 
@@ -109,6 +110,7 @@ export class OpenAICatalogNormalizer implements CatalogNormalizer {
     userId: string;
     lines: NormalizationSourceLine[];
     catalog: NormalizationCatalogContext[];
+    existingCategories: string[];
   }): Promise<CatalogNormalizationResponse> {
     if (!this.apiKey) {
       throw new Error(
@@ -144,7 +146,9 @@ export class OpenAICatalogNormalizer implements CatalogNormalizer {
                   "base name. Never merge protected differences such as generator kVA, gazebo size, truck tonnage, " +
                   "day/night staffing, per-kilometre/per-trip, or hourly/daily pricing. Use ZAR ex-VAT comparison " +
                   "bases. Create a base profile only when no existing profile is defensibly equivalent. Return one " +
-                  "result for every input line and do not invent source facts."
+                  "result for every input line and do not invent source facts. " +
+                  `\n\nWhen classifying the category, prefer these existing categories if it matches perfectly: ${input.existingCategories.join(", ")}. ` +
+                  "If the service does not fit any of the existing categories, you are free to invent a new concise, professional category name (e.g. 'Logistics', 'Medical')."
               }
             ]
           },
@@ -168,7 +172,6 @@ export class OpenAICatalogNormalizer implements CatalogNormalizer {
             strict: true,
             schema: responseJsonSchema
           },
-          // gpt-4o-mini only accepts the default/medium verbosity level.
           verbosity: "medium"
         }
       })

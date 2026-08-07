@@ -278,6 +278,19 @@ export class CatalogService {
     private readonly tenantId?: string
   ) {}
 
+  async getCategories(): Promise<string[]> {
+    const { data, error } = await this.database
+      .from("catalog_items")
+      .select("category")
+      .eq("active", true);
+
+    if (error) throw new Error(`Database error: ${error.message}`);
+    if (!data) return [];
+
+    const categories = new Set(data.map((row: { category: string }) => row.category).filter(Boolean));
+    return Array.from(categories).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }
+
   async list(input: CatalogListQuery): Promise<PaginatedCatalogResponse> {
     const pageOffset = (input.page - 1) * input.pageSize;
     let query = this.database

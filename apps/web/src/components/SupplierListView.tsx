@@ -14,19 +14,21 @@ export function SupplierListView({ onSelect }: { onSelect: (id: string) => void 
   const [dateRangePreset, setDateRangePreset] =
     useState<DateRangePreset>("all-time");
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [supplierToDelete, setSupplierToDelete] = useState<{ id: string; name: string } | null>(null);
   const suppliers = useQuery({
     queryKey: ["suppliers", dateRangePreset],
     queryFn: () => api.suppliers(resolveDateRange(dateRangePreset))
   });
 
-  async function deactivateSupplier(id: string, name: string) {
-    if (!window.confirm(`Deactivate "${name}"? Quote history remains auditable.`)) return;
+  async function confirmDeleteSupplier() {
+    if (!supplierToDelete) return;
     try {
-      await api.deleteSupplier(id);
+      await api.deleteSupplier(supplierToDelete.id);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["suppliers"] }),
         queryClient.invalidateQueries({ queryKey: ["stats"] })
       ]);
+      setSupplierToDelete(null);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Failed to deactivate supplier.");
     }
@@ -107,8 +109,13 @@ export function SupplierListView({ onSelect }: { onSelect: (id: string) => void 
                       type="button"
                       className="delete-icon-btn"
                       aria-label={`Deactivate ${s.supplierName}`}
-                      onClick={() => void deactivateSupplier(s.supplierId, s.supplierName)}
-                    >×</button>
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSupplierToDelete({ id: s.supplierId, name: s.supplierName });
+                      }}
+                    >
+                      Delete
+                    </button>
                     <span className="arrow">↗</span>
                   </div>
                 </div>
@@ -158,6 +165,34 @@ export function SupplierListView({ onSelect }: { onSelect: (id: string) => void 
             void queryClient.invalidateQueries({ queryKey: ["stats"] });
           }}
         />
+      )}
+
+      {supplierToDelete && (
+        <div className="modal-backdrop" onClick={() => setSupplierToDelete(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
+            <h2>Are you sure?</h2>
+            <p style={{ color: 'var(--muted)', marginTop: 12, lineHeight: 1.6 }}>
+              Do you really want to deactivate <strong>"{supplierToDelete.name}"</strong>? 
+              <br/><br/>
+              Quote history remains auditable, but this supplier will be hidden from active analytics.
+            </p>
+            <div className="modal-actions" style={{ marginTop: 32 }}>
+              <button 
+                className="button secondary" 
+                onClick={() => setSupplierToDelete(null)}
+              >
+                No, cancel
+              </button>
+              <button 
+                className="button primary" 
+                style={{ background: 'var(--red)', borderColor: 'var(--red)' }}
+                onClick={confirmDeleteSupplier}
+              >
+                Yes, delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );

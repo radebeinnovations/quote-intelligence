@@ -87,6 +87,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getCategories: () => request<string[]>("/api/catalog-categories"),
   stats: () => request<StatsResponse>("/api/stats"),
   catalog: (
     query: string,

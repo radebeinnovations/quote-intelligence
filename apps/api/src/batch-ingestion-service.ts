@@ -494,10 +494,12 @@ export class BatchIngestionService {
       return;
     }
     const context = await this.catalogContext();
+    const existingCategories = Array.from(new Set(context.map((c) => c.category).filter(Boolean)));
     const response = await this.normalizer
       .normalize({
         userId: this.userId,
         catalog: context,
+        existingCategories,
         lines: lines.map((line) => ({
           lineItemId: line.id,
           description: line.description_raw,
@@ -633,7 +635,7 @@ export class BatchIngestionService {
         {
           user_id: this.userId,
           name: rule.name,
-          category: canonicalCategory(rule.category),
+          category: rule.category,
           description: rule.description,
           canonical_unit: rule.canonicalUnit,
           canonical_pricing_basis: rule.canonicalBasis,
@@ -731,7 +733,7 @@ export class BatchIngestionService {
           .insert({
             user_id: this.userId,
             name: normalized.baseName,
-            category: canonicalCategory(normalized.category),
+            category: normalized.category,
             description: `${normalized.baseName}, consolidated from supplier descriptions.`,
             canonical_unit: normalized.canonicalUnit,
             canonical_pricing_basis: normalized.pricingBasis,
@@ -898,14 +900,6 @@ function safeFilename(filename: string): string {
   return (
     filename.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ||
     "quote-upload"
-  );
-}
-
-function canonicalCategory(value: string): (typeof CATALOG_CATEGORIES)[number] {
-  return (
-    CATALOG_CATEGORIES.find(
-      (category) => category.toLocaleLowerCase() === value.trim().toLocaleLowerCase()
-    ) ?? "Uncategorised"
   );
 }
 

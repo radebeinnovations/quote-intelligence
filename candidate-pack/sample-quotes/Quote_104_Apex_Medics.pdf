@@ -1,0 +1,75 @@
+%PDF-1.4
+1 0 obj
+<</Type /Catalog /Pages 2 0 R>>
+endobj
+2 0 obj
+<</Type /Pages /Kids [3 0 R] /Count 1>>
+endobj
+3 0 obj
+<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources <</Font <</F1 4 0 R /F2 5 0 R>>>> /Contents 6 0 R>>
+endobj
+4 0 obj
+<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold>>
+endobj
+5 0 obj
+<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>
+endobj
+6 0 obj
+<</Length 989>>
+stream
+BT
+/F1 18 Tf
+50 740 Td
+(Apex Medical Responders) Tj
+ET
+BT
+/F2 10 Tf
+50 710 Td
+(TAX INVOICE / QUOTATION) Tj
+0 -18 Td
+(Quote Number: AMR-Q-45) Tj
+0 -14 Td
+(Date: 13 August 2026) Tj
+0 -14 Td
+(VAT Number: 4111222333) Tj
+0 -14 Td
+(Currency: ZAR) Tj
+0 -25 Td
+(--------------------------------------------------------------------------------------------------) Tj
+0 -18 Td
+/F1 10 Tf
+(Description                                          Qty     Unit          Rate \(ZAR\)     Total \(ZAR\)) Tj
+ET
+BT
+/F2 10 Tf
+50 580 Td
+(Basic Life Support Ambulance                     1      shift             4500.00        4500.00) Tj
+0 -16 Td
+(Advanced Life Support Paramedic                  2      shift             2500.00        5000.00) Tj
+0 -16 Td
+0 -15 Td
+(--------------------------------------------------------------------------------------------------) Tj
+0 -20 Td
+(Subtotal \(Excl VAT\): R 9500.00) Tj
+0 -14 Td
+(VAT \(15%\): R 1425.00) Tj
+0 -16 Td
+/F1 11 Tf
+(Total \(Incl VAT\): R 10925.00) Tj
+ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000056 00000 n 
+0000000111 00000 n 
+0000000241 00000 n 
+0000000314 00000 n 
+0000000382 00000 n 
+trailer
+<</Size 7 /Root 1 0 R>>
+startxref
+1420
+%%EOF

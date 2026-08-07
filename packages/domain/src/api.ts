@@ -1,24 +1,7 @@
 import { z } from "zod";
 
-export const CATALOG_CATEGORIES = [
-  "Staffing",
-  "Power",
-  "Equipment hire",
-  "Catering",
-  "Transport",
-  "Production",
-  "Decor",
-  "Uncategorised"
-] as const;
-
-export const catalogCategorySchema = z.preprocess((value) => {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  const normalized = value.trim().toLowerCase();
-  return (
-    CATALOG_CATEGORIES.find((category) => category.toLowerCase() === normalized) ??
-    value.trim()
-  );
-}, z.enum(CATALOG_CATEGORIES));
+export const catalogCategorySchema = z.string().min(1).trim();
+export type CatalogCategory = z.infer<typeof catalogCategorySchema>;
 
 export const catalogSortBySchema = z.enum([
   "name",

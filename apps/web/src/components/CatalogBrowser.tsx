@@ -1,11 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CATALOG_CATEGORIES,
   type CatalogCategory,
   type CatalogSortBy,
   type SortOrder
 } from "@quote-intelligence/domain";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { downloadCsv } from "../csv";
 import { resolveDateRange, type DateRangePreset } from "../date-range";
@@ -52,11 +51,19 @@ export function CatalogBrowser({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [normalizationRetrying, setNormalizationRetrying] = useState(false);
   const [normalizationError, setNormalizationError] = useState<string | null>(null);
+  const [selectedVariantLabel, setSelectedVariantLabel] = useState<string>("");
+  const [itemToDelete, setItemToDelete] = useState<{ id: string; name: string } | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setQuery(input.trim()), 250);
     return () => window.clearTimeout(timer);
   }, [input]);
+
+  const { data: dynamicCategories = [] } = useQuery({
+    queryKey: ["catalog-categories"],
+    queryFn: api.getCategories,
+    staleTime: 60000,
+  });
 
   const catalog = useQuery({
     queryKey: [
@@ -76,8 +83,27 @@ export function CatalogBrowser({
       })
   });
 
+  const availableVariantLabels = useMemo(() => {
+    if (!catalog.data?.items) return [];
+    const labels = new Set<string>();
+    for (const item of catalog.data.items) {
+      for (const variant of item.variants) {
+        if (variant.label) labels.add(variant.label);
+      }
+    }
+    return Array.from(labels).sort();
+  }, [catalog.data?.items]);
+
+  const displayedItems = useMemo(() => {
+    if (!catalog.data?.items) return [];
+    if (!selectedVariantLabel) return catalog.data.items;
+    return catalog.data.items.filter(item => 
+      item.variants.some(v => v.label === selectedVariantLabel)
+    );
+  }, [catalog.data?.items, selectedVariantLabel]);
+
   function exportCsv() {
-    if (!catalog.data?.items) return;
+    if (!displayedItems.length) return;
     const header = [
       "Service Name",
       "Category",
@@ -88,7 +114,7 @@ export function CatalogBrowser({
       "Suppliers Count",
       "Linked Lines Count"
     ];
-    const rows = catalog.data.items.map((item) => [
+    const rows = displayedItems.map((item) => [
       item.name,
       item.category,
       item.primaryUnit,
@@ -126,18 +152,17 @@ export function CatalogBrowser({
     }
   }
 
-  async function handleDelete(itemId: string, itemName: string) {
-    if (!window.confirm(
-      `Deactivate "${itemName}"? Historical price observations remain in the audit trail.`
-    )) return;
+  async function confirmDelete() {
+    if (!itemToDelete) return;
     try {
-      await api.deleteCatalogItem(itemId);
+      await api.deleteCatalogItem(itemToDelete.id);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["catalog"] }),
         queryClient.invalidateQueries({ queryKey: ["stats"] }),
         queryClient.invalidateQueries({ queryKey: ["suppliers"] }),
         queryClient.invalidateQueries({ queryKey: ["unmatched-line-items"] })
       ]);
+      setItemToDelete(null);
     } catch (error) {
       window.alert(
         error instanceof Error ? error.message : "Failed to deactivate service."
@@ -185,22 +210,6 @@ export function CatalogBrowser({
         </div>
         <div className="page-actions">
           <button
-            className={`button secondary compact ${
-              isRefreshing || catalog.isFetching ? "refreshing" : ""
-            }`}
-            onClick={() => void handleRefresh()}
-            disabled={isRefreshing || catalog.isFetching}
-            title="Refresh catalog data and metrics"
-          >
-            <span className="refresh-icon" aria-hidden="true">↻</span>
-            <span>
-              {isRefreshing || catalog.isFetching ? "Refreshing..." : "Refresh"}
-            </span>
-          </button>
-          <button className="button primary compact" onClick={onUpload}>
-            + Upload quotes
-          </button>
-          <button
             className="button secondary compact"
             onClick={() => setShowCreateModal(true)}
           >
@@ -234,7 +243,7 @@ export function CatalogBrowser({
               }
             >
               <option value="">All categories</option>
-              {CATALOG_CATEGORIES.map((item) => (
+              {dynamicCategories.map((item) => (
                 <option value={item} key={item}>
                   {categoryLabel(item)}
                 </option>
@@ -271,7 +280,7 @@ export function CatalogBrowser({
         >
           All
         </button>
-        {CATALOG_CATEGORIES.map((item) => (
+        {dynamicCategories.map((item) => (
           <button
             type="button"
             key={item}
@@ -284,14 +293,38 @@ export function CatalogBrowser({
         ))}
       </div>
 
+      {availableVariantLabels.length > 0 && (
+        <div className="category-filter-strip variant-filter-strip" aria-label="Filter catalog by size or variant">
+          <button
+            type="button"
+            className={selectedVariantLabel === "" ? "active" : ""}
+            aria-pressed={selectedVariantLabel === ""}
+            onClick={() => setSelectedVariantLabel("")}
+          >
+            All Sizes
+          </button>
+          {availableVariantLabels.map((label) => (
+            <button
+              type="button"
+              key={label}
+              className={selectedVariantLabel === label ? "active" : ""}
+              aria-pressed={selectedVariantLabel === label}
+              onClick={() => setSelectedVariantLabel(label)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {catalog.isLoading && <CatalogSkeleton />}
       {catalog.isError && <ErrorState message={catalog.error.message} />}
-      {catalog.data?.items.length === 0 &&
-        (query || category || dateRangePreset !== "all-time" ? (
+      {displayedItems.length === 0 &&
+        (query || category || selectedVariantLabel || dateRangePreset !== "all-time" ? (
           <div className="empty-state">
             <span>∅</span>
             <h3>No catalog services found</h3>
-            <p>Nothing matches the current search, category, and date filters.</p>
+            <p>Nothing matches the current search, category, size, and date filters.</p>
           </div>
         ) : (
           <div className="bootstrap-callout panel">
@@ -333,7 +366,7 @@ export function CatalogBrowser({
         ))}
 
       <div className="catalog-grid">
-        {catalog.data?.items.map((item) => (
+        {displayedItems.map((item) => (
           <article className="catalog-card" key={item.id}>
             <button
               className="catalog-card-hitbox"
@@ -346,10 +379,13 @@ export function CatalogBrowser({
                 <button
                   type="button"
                   className="delete-icon-btn"
-                  aria-label={`Deactivate ${item.name}`}
-                  onClick={() => void handleDelete(item.id, item.name)}
+                  aria-label="Deactivate service"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setItemToDelete({ id: item.id, name: item.name });
+                  }}
                 >
-                  ×
+                  Delete
                 </button>
                 <span className="arrow">↗</span>
               </div>
@@ -427,6 +463,34 @@ export function CatalogBrowser({
             await queryClient.refetchQueries({ queryKey: ["catalog"] });
           }}
         />
+      )}
+
+      {itemToDelete && (
+        <div className="modal-backdrop" onClick={() => setItemToDelete(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
+            <h2>Are you sure?</h2>
+            <p style={{ color: 'var(--muted)', marginTop: 12, lineHeight: 1.6 }}>
+              Do you really want to deactivate <strong>"{itemToDelete.name}"</strong>? 
+              <br/><br/>
+              Historical price observations will remain in the audit trail, but this item will no longer appear in the active catalog.
+            </p>
+            <div className="modal-actions" style={{ marginTop: 32 }}>
+              <button 
+                className="button secondary" 
+                onClick={() => setItemToDelete(null)}
+              >
+                No, cancel
+              </button>
+              <button 
+                className="button primary" 
+                style={{ background: 'var(--red)', borderColor: 'var(--red)' }}
+                onClick={confirmDelete}
+              >
+                Yes, delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );
