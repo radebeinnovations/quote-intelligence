@@ -358,7 +358,6 @@ export const batchQuoteUploadSchema = z.object({
       })
     )
     .min(1)
-    .max(20)
 });
 
 export type BatchQuoteUploadInput = z.infer<typeof batchQuoteUploadSchema>;

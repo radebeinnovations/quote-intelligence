@@ -38,7 +38,7 @@ export function UploadQuoteModal({
           file
         ])
       );
-      return [...deduplicated.values()].slice(0, 20);
+      return [...deduplicated.values()];
     });
   }
 
@@ -77,7 +77,7 @@ export function UploadQuoteModal({
         <p className="eyebrow">Catalog onboarding</p>
         <h2 id="upload-title">Upload supplier quotes</h2>
         <p className="modal-intro">
-          Add up to 20 PDF or XLSX quotes. Originals remain in your private vault;
+          Add unlimited PDF or XLSX quotes. Originals remain in your private vault;
           extraction and catalog normalization preserve every raw source line.
         </p>
 
