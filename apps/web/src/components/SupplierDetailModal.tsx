@@ -1,5 +1,6 @@
 import type { SupplierPerformance } from "@quote-intelligence/domain";
 import { formatDate, formatNumber, zar } from "../format";
+import { Price } from "./Price";
 import { useModalAccessibility } from "../use-modal-accessibility";
 
 interface SupplierDetailModalProps {
@@ -75,7 +76,7 @@ export function SupplierDetailModal({
 
         <div className="fair-price-hero" style={{ marginBottom: "20px" }}>
           <span>Total quoted spend</span>
-          <strong>{zar.format(supplier.totalSpend ?? 0)}</strong>
+          <strong><Price amount={supplier.totalSpend ?? 0} label={`${supplier.supplierName} Total Spend`} /></strong>
           <small>
             Active quotes on file:{" "}
             {supplier.firstQuoteDate && supplier.lastQuoteDate

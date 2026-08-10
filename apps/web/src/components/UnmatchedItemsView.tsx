@@ -3,6 +3,7 @@ import type { UnmatchedLineItem } from "@quote-intelligence/domain";
 import { useState } from "react";
 import { api } from "../api";
 import { formatDate, zar } from "../format";
+import { Price } from "./Price";
 import { ReassignModal } from "./ReassignModal";
 
 export function UnmatchedItemsView() {
@@ -70,7 +71,7 @@ export function UnmatchedItemsView() {
                   </span>
                 </div>
                 <div className="line-rate">
-                  <strong>{zar.format(line.rawRate)}</strong>
+                  <strong><Price amount={line.rawRate} label={`${line.description} (Raw Rate)`} /></strong>
                   <span>
                     {line.quantity} × {line.rawUnit} · {line.taxBasis} VAT
                   </span>

@@ -9,6 +9,7 @@ import { api } from "../api";
 import { downloadCsv } from "../csv";
 import { resolveDateRange, type DateRangePreset } from "../date-range";
 import { formatDate, formatNumber, zar } from "../format";
+import { Price } from "./Price";
 import { CreateCatalogItemModal } from "./CreateCatalogItemModal";
 import { DateRangeSelector } from "./DateRangeSelector";
 
@@ -428,7 +429,7 @@ export function CatalogBrowser({
               <strong>
                 {item.fairPrice === null
                   ? "Insufficient data"
-                  : zar.format(item.fairPrice)}
+                  : <Price amount={item.fairPrice} label={item.name} />}
               </strong>
               <small>per {item.primaryUnit}</small>
             </div>
@@ -440,9 +441,14 @@ export function CatalogBrowser({
               <div>
                 <dt>Rate range</dt>
                 <dd>
-                  {item.minPrice === null || item.maxPrice === null
-                    ? "—"
-                    : `${zar.format(item.minPrice)} – ${zar.format(item.maxPrice)}`}
+                  {item.minPrice === null || item.maxPrice === null ? (
+                    "—"
+                  ) : (
+                    <>
+                      <Price amount={item.minPrice} label={`${item.name} (Min)`} /> –{" "}
+                      <Price amount={item.maxPrice} label={`${item.name} (Max)`} />
+                    </>
+                  )}
                 </dd>
               </div>
               <div>

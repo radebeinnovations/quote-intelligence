@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { formatDate, formatNumber, zar } from "../format";
+import { Price } from "./Price";
 
 export function SupplierProfileView({
   id,
@@ -58,7 +59,7 @@ export function SupplierProfileView({
         </article>
         <article className="panel">
           <span>Total quoted spend</span>
-          <strong>{zar.format(totalSpend)}</strong>
+          <strong><Price amount={totalSpend} label={`${supplier.name} Total Spend`} /></strong>
           <small>Current extracted line totals · ex VAT</small>
         </article>
         <article className="panel">
@@ -97,7 +98,7 @@ export function SupplierProfileView({
                   </span>
                   <span className="quote-vault-total">
                     <strong>
-                      {quote.totalExVat === null ? "—" : zar.format(quote.totalExVat)}
+                      {quote.totalExVat === null ? "—" : <Price amount={quote.totalExVat} label={`Quote ${quote.quoteNumber} Total`} />}
                     </strong>
                     <small>{quote.originalFilename}</small>
                   </span>
@@ -136,8 +137,8 @@ export function SupplierProfileView({
                               <small>Qty {line.quantity} · {line.rawUnit}</small>
                             </td>
                             <td>
-                              {zar.format(line.rawRate)}
-                              <small>Total {zar.format(line.rawTotal)}</small>
+                              <Price amount={line.rawRate} label={`${line.rawDescription} (Raw Rate)`} />
+                              <small>Total <Price amount={line.rawTotal} label={`${line.rawDescription} (Raw Total)`} /></small>
                             </td>
                             <td>
                               {line.catalogItemName ?? "Unmatched"}
@@ -146,7 +147,7 @@ export function SupplierProfileView({
                             <td>
                               {line.normalizedRate === null
                                 ? "Not comparable"
-                                : zar.format(line.normalizedRate)}
+                                : <Price amount={line.normalizedRate} label={`${line.rawDescription} (Normalized Rate)`} />}
                               {line.normalizedBasis && <small>per {line.normalizedBasis}</small>}
                             </td>
                           </tr>

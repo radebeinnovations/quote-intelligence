@@ -17,6 +17,8 @@ import { UploadQuoteModal } from "./components/UploadQuoteModal";
 import { UnmatchedItemsView } from "./components/UnmatchedItemsView";
 import { formatDate, formatNumber } from "./format";
 import { useAuth } from "./auth";
+import { CalculatorProvider } from "./calculator";
+import { CalculatorWidget } from "./components/CalculatorWidget";
 
 type Route =
   | { name: "catalog" }
@@ -62,7 +64,9 @@ function currentRoute(): Route {
 export function App() {
   return (
     <AppErrorBoundary>
-      <AppContent />
+      <CalculatorProvider>
+        <AppContent />
+      </CalculatorProvider>
     </AppErrorBoundary>
   );
 }
@@ -169,30 +173,50 @@ function AppContent() {
           <span><strong>Bokmakierie</strong><small>Quote Intelligence</small></span>
         </button>
         <nav>
-          <button
-            className={route.name === "catalog" ? "active" : ""}
-            onClick={() => navigate({ name: "catalog" })}
-          >
-            <span>⌘</span> Catalog
-          </button>
-          <button
-            className={route.name === "suppliers" || route.name === "supplier-detail" ? "active" : ""}
-            onClick={() => navigate({ name: "suppliers" })}
-          >
-            <span>📊</span> Suppliers
-          </button>
-          <button
-            className={route.name === "review" ? "active" : ""}
-            onClick={() => navigate({ name: "review" })}
-          >
-            <span>↗</span> Review queue
-          </button>
-          <button
-            className={route.name === "audit" ? "active" : ""}
-            onClick={() => navigate({ name: "audit" })}
-          >
-            <span>📜</span> Ingestion Audit
-          </button>
+          <div className="nav-section">
+            <span className="nav-section-title">Core</span>
+            <button
+              className={route.name === "catalog" ? "active" : ""}
+              onClick={() => navigate({ name: "catalog" })}
+            >
+              <span>⌘</span> Catalog
+            </button>
+            <button
+              className={route.name === "suppliers" || route.name === "supplier-detail" ? "active" : ""}
+              onClick={() => navigate({ name: "suppliers" })}
+            >
+              <span>📊</span> Suppliers
+            </button>
+          </div>
+          
+          <div className="nav-section">
+            <span className="nav-section-title">Workflow</span>
+            <button
+              className={route.name === "review" ? "active" : ""}
+              onClick={() => navigate({ name: "review" })}
+            >
+              <span>↗</span> Review queue
+            </button>
+            <button
+              className={route.name === "audit" ? "active" : ""}
+              onClick={() => navigate({ name: "audit" })}
+            >
+              <span>📜</span> Ingestion Audit
+            </button>
+            <button onClick={() => setUploadOpen(true)}>
+              <span>+</span> Upload quotes
+            </button>
+          </div>
+
+          <div className="nav-section">
+            <span className="nav-section-title">System</span>
+            <button onClick={() => setTheme((value) => (value === "dark" ? "light" : "dark"))}>
+              <span>{theme === "dark" ? "☀" : "◐"}</span> {theme === "dark" ? "Light Mode" : "Dark Mode"}
+            </button>
+            <button onClick={() => void signOut()}>
+              <span>←</span> Sign out
+            </button>
+          </div>
         </nav>
         <div className="sidebar-note">
           <span className="live-dot" />
@@ -213,20 +237,7 @@ function AppContent() {
               <span className="refresh-icon">🔄</span>
               <span>{isRefreshing ? "Refreshing..." : "Refresh"}</span>
             </button>
-            <button className="button primary compact" onClick={() => setUploadOpen(true)}>
-              + Upload quotes
-            </button>
             <span className="user-email" title={user.email}>{user.email}</span>
-            <button className="button secondary compact" onClick={() => void signOut()}>
-              Sign out
-            </button>
-            <button
-              className="theme-toggle"
-              onClick={() => setTheme((value) => (value === "dark" ? "light" : "dark"))}
-              aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-            >
-              {theme === "dark" ? "☀" : "◐"}
-            </button>
           </div>
         </header>
 
@@ -286,6 +297,7 @@ function AppContent() {
           }}
         />
       )}
+      <CalculatorWidget />
     </div>
   );
 }

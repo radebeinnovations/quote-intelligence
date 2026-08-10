@@ -133,12 +133,8 @@ export class BatchIngestionService {
       .order("created_at", { ascending: true });
     if (error) throw error;
 
-    const pendingDocuments = ((data ?? []) as PendingSourceDocument[]).filter(
-      (document) => hasPendingNormalization(document.extraction_warnings)
-    );
-    this.openAICreditsUnavailable = pendingDocuments.some((document) =>
-      isOpenAICreditExhaustion(document.extraction_warnings)
-    );
+    const pendingDocuments = (data ?? []) as PendingSourceDocument[];
+    this.openAICreditsUnavailable = false;
     const result: CatalogNormalizationRetryResult = {
       documentsRetried: 0,
       linesRetried: 0,
@@ -279,13 +275,21 @@ export class BatchIngestionService {
     }
 
     try {
-      if (fileType === "pdf" && !process.env.DOCUPIPE_API_KEY) {
-        throw new Error("DOCUPIPE_API_KEY is required for PDF parsing.");
+      let document: ExtractedDocument | null = null;
+      if (fileType === "pdf") {
+        document = parsePdfQuoteBufferFast(bytes);
+        if (!document) {
+          if (!process.env.DOCUPIPE_API_KEY) {
+            throw new Error("DOCUPIPE_API_KEY is required for PDF parsing.");
+          }
+          document = await this.docuPipe.parsePdf(bytes, file.filename);
+        }
+      } else {
+        document = parseXlsxQuoteBuffer(bytes);
       }
-      const document =
-        fileType === "pdf"
-          ? await this.docuPipe.parsePdf(bytes, file.filename)
-          : parseXlsxQuoteBuffer(bytes);
+      if (!document) {
+        throw new Error("Failed to parse document");
+      }
       const warnings = validateExtractedDocument(document).map(
         ({ message }) => message
       );
@@ -679,6 +683,8 @@ export class BatchIngestionService {
           .select("line_item_id")
           .eq("user_id", this.userId)
           .in("line_item_id", lineIds)
+          .neq("status", "unmatched")
+          .not("catalog_item_id", "is", null)
       : { data: [], error: null };
     if (matchError) throw matchError;
     const matchedLineIds = new Set(
@@ -687,6 +693,15 @@ export class BatchIngestionService {
       )
     );
     const pendingLines = lineRows.filter(({ id }) => !matchedLineIds.has(id));
+    
+    if (pendingLines.length > 0) {
+      const { error: deleteError } = await this.database
+        .from("catalog_matches")
+        .delete()
+        .in("line_item_id", pendingLines.map(l => l.id));
+      if (deleteError) throw deleteError;
+    }
+
     await this.normalizeLines(pendingLines);
 
     const { error: warningError } = await this.database

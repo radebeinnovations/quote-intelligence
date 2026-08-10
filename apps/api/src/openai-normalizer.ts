@@ -143,8 +143,9 @@ export class OpenAICatalogNormalizer implements CatalogNormalizer {
                   "Normalize event-procurement quote lines into precise base catalog profiles and variants. " +
                   "Reuse an existing catalogItemId whenever the real-world service is the same. Put dimensions, " +
                   "capacity, vehicle tonnage, power rating, shift, or specification in variant attributes, not the " +
-                  "base name. Never merge protected differences such as generator kVA, gazebo size, truck tonnage, " +
-                  "day/night staffing, per-kilometre/per-trip, or hourly/daily pricing. Use ZAR ex-VAT comparison " +
+                  "base name. You MUST merge items of different sizes, capacities, or tonnages into a SINGLE base profile " +
+                  "(e.g., merge '1-ton bakkie' and '8-ton truck' into 'Truck transport', or '1.8m table' and '5m table' into 'Trestle table'). " +
+                  "Never merge per-kilometre/per-trip, or hourly/daily pricing. Use ZAR ex-VAT comparison " +
                   "bases. Create a base profile only when no existing profile is defensibly equivalent. Return one " +
                   "result for every input line and do not invent source facts. " +
                   `\n\nWhen classifying the category, prefer these existing categories if it matches perfectly: ${input.existingCategories.join(", ")}. ` +

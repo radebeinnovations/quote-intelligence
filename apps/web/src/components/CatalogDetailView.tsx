@@ -3,6 +3,7 @@ import type { LinkedLineItem } from "@quote-intelligence/domain";
 import { useState } from "react";
 import { api } from "../api";
 import { formatDate, zar } from "../format";
+import { Price } from "./Price";
 import { PriceHistoryChart } from "./PriceHistoryChart";
 import { ReassignModal } from "./ReassignModal";
 import { downloadCsv } from "../csv";
@@ -91,7 +92,7 @@ export function CatalogDetailView({
         </div>
         <div className="fair-price-hero">
           <span>Estimated fair price</span>
-          <strong>{fairPrice.value === null ? "—" : zar.format(fairPrice.value)}</strong>
+          <strong>{fairPrice.value === null ? "—" : <Price amount={fairPrice.value} label={`${item.name} Fair Price`} />}</strong>
           <small>ex VAT · per {item.pricingBasis}</small>
         </div>
       </header>
@@ -153,10 +154,10 @@ export function CatalogDetailView({
           </div>
           <p className="formula">{fairPrice.formula}</p>
           <div className="formula-values">
-            <Metric label="Overall median" value={moneyOrDash(fairPrice.overallMedian)} />
-            <Metric label="Recent median" value={moneyOrDash(fairPrice.recentMedian)} />
-            <Metric label="Mean rate" value={moneyOrDash(fairPrice.mean)} />
-            <Metric label="IQR-filtered mean" value={moneyOrDash(fairPrice.filteredMean)} />
+            <Metric label="Overall median" value={moneyOrDash(fairPrice.overallMedian, "Overall Median")} />
+            <Metric label="Recent median" value={moneyOrDash(fairPrice.recentMedian, "Recent Median")} />
+            <Metric label="Mean rate" value={moneyOrDash(fairPrice.mean, "Mean Rate")} />
+            <Metric label="IQR-filtered mean" value={moneyOrDash(fairPrice.filteredMean, "IQR-filtered Mean")} />
             <Metric label="Observations" value={String(fairPrice.sampleSize)} />
             <Metric label="Suppliers" value={String(fairPrice.supplierCount)} />
           </div>
@@ -164,7 +165,7 @@ export function CatalogDetailView({
             {fairPrice.excludedCount} non-comparable or invalid observation(s) excluded.
             {" "}{fairPrice.outlierCount} statistical outlier(s) highlighted but retained in the median.
             {fairPrice.iqrLow !== null && fairPrice.iqrHigh !== null && (
-              <> IQR fence: {zar.format(fairPrice.iqrLow)}–{zar.format(fairPrice.iqrHigh)}.</>
+              <> IQR fence: <Price amount={fairPrice.iqrLow} label="IQR Low" />–<Price amount={fairPrice.iqrHigh} label="IQR High" />.</>
             )}
           </p>
         </article>
@@ -176,7 +177,7 @@ export function CatalogDetailView({
               <div key={`${observation.date}-${observation.supplierName}-${index}`}>
                 <span className={observation.outlier ? "outlier-dot" : "normal-dot"} />
                 <span>{observation.supplierName}<small>{formatDate(observation.date)}</small></span>
-                <strong>{zar.format(observation.rate)}</strong>
+                <strong><Price amount={observation.rate} label={`${observation.supplierName} Observation`} /></strong>
               </div>
             ))}
           </div>
@@ -220,11 +221,11 @@ export function CatalogDetailView({
                 return (
                   <tr key={supplier.supplierId}>
                     <td><strong>{supplier.supplierName}</strong><small>per {supplier.primaryUnit}</small></td>
-                    <td>{zar.format(supplier.averageRate)}</td>
-                    <td>{zar.format(supplier.minRate)} – {zar.format(supplier.maxRate)}</td>
+                    <td><Price amount={supplier.averageRate} label={`${supplier.supplierName} Avg Rate`} /></td>
+                    <td><Price amount={supplier.minRate} label={`${supplier.supplierName} Min Rate`} /> – <Price amount={supplier.maxRate} label={`${supplier.supplierName} Max Rate`} /></td>
                     <td><Variance value={variance} /></td>
                     <td>{supplier.quoteCount}</td>
-                    <td>{formatDate(supplier.lastQuoteDate)}<small>{zar.format(supplier.lastQuotedRate)}</small></td>
+                    <td>{formatDate(supplier.lastQuoteDate)}<small><Price amount={supplier.lastQuotedRate} label={`${supplier.supplierName} Last Rate`} /></small></td>
                   </tr>
                 );
               })}
@@ -258,7 +259,7 @@ export function CatalogDetailView({
                 <span>{line.supplierName} · {line.quoteNumber} · {formatDate(line.date)}</span>
               </div>
               <div className="line-rate">
-                <strong>{zar.format(line.rawRate)}</strong>
+                <strong><Price amount={line.rawRate} label={`${line.supplierName} Raw Rate`} /></strong>
                 <span>{line.rawUnit} · {line.taxBasis} VAT</span>
               </div>
               <div className="line-status">
@@ -294,12 +295,12 @@ export function CatalogDetailView({
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value }: { label: string; value: React.ReactNode }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function moneyOrDash(value: number | null) {
-  return value === null ? "—" : zar.format(value);
+function moneyOrDash(value: number | null, label: string) {
+  return value === null ? "—" : <Price amount={value} label={label} />;
 }
 
 function confidenceLabel(value: number) {

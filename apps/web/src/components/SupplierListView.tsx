@@ -6,8 +6,10 @@ import {
   type DateRangePreset
 } from "../date-range";
 import { formatDate, formatNumber, zar } from "../format";
-import { DateRangeSelector } from "./DateRangeSelector";
+import { Price } from "./Price";
+import { SupplierDetailModal } from "./SupplierDetailModal";
 import { CreateSupplierModal } from "./CreateSupplierModal";
+import { DateRangeSelector } from "./DateRangeSelector";
 
 export function SupplierListView({ onSelect }: { onSelect: (id: string) => void }) {
   const queryClient = useQueryClient();
@@ -15,6 +17,7 @@ export function SupplierListView({ onSelect }: { onSelect: (id: string) => void 
     useState<DateRangePreset>("all-time");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [supplierToDelete, setSupplierToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const suppliers = useQuery({
     queryKey: ["suppliers", dateRangePreset],
     queryFn: () => api.suppliers(resolveDateRange(dateRangePreset))
@@ -46,15 +49,28 @@ export function SupplierListView({ onSelect }: { onSelect: (id: string) => void 
           </p>
         </div>
         <div className="page-actions">
-          <DateRangeSelector
-            className="supplier-date-filter"
-            value={dateRangePreset}
-            onChange={setDateRangePreset}
-          />
           <button className="button secondary compact" onClick={() => setShowCreateModal(true)}>
             + Add supplier
           </button>
         </div>
+      </div>
+
+      <div className="catalog-controls">
+        <label className="search-box" style={{ flex: 1 }}>
+          <span aria-hidden="true">⌕</span>
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search suppliers by name..."
+            aria-label="Search suppliers"
+          />
+        </label>
+        <DateRangeSelector
+          className="supplier-date-filter"
+          value={dateRangePreset}
+          onChange={setDateRangePreset}
+        />
       </div>
 
       {suppliers.isLoading && <div className="detail-loading">Loading supplier analytics…</div>}
@@ -65,16 +81,19 @@ export function SupplierListView({ onSelect }: { onSelect: (id: string) => void 
         </div>
       )}
 
-      {suppliers.data && (
-        suppliers.data.length === 0 ? (
+      {suppliers.data && (() => {
+        const filteredSuppliers = suppliers.data.filter(s => 
+          !searchQuery || s.supplierName.toLowerCase().includes(searchQuery.toLowerCase())
+        );
+        return filteredSuppliers.length === 0 ? (
           <div className="empty-state">
             <span>∅</span>
-            <h3>No suppliers in this range</h3>
-            <p>Upload supplier quotes or choose a wider date range.</p>
+            <h3>No suppliers found</h3>
+            <p>Try a different search term or wider date range.</p>
           </div>
         ) : (
         <div className="catalog-grid">
-          {suppliers.data.map((s) => {
+          {filteredSuppliers.map((s) => {
             const varianceClass =
               s.variancePercent === null
                 ? "variance-neutral"
@@ -127,7 +146,7 @@ export function SupplierListView({ onSelect }: { onSelect: (id: string) => void 
                 </p>
                 <div className="fair-price-row">
                   <span>Total quoted spend</span>
-                  <strong>{zar.format(s.totalSpend)}</strong>
+                  <strong><Price amount={s.totalSpend} label={`${s.supplierName} Total Spend`} /></strong>
                   <small>
                     Active quotes: {s.firstQuoteDate ? `${formatDate(s.firstQuoteDate)} – ${formatDate(s.lastQuoteDate!)}` : "None"}
                   </small>
@@ -155,7 +174,7 @@ export function SupplierListView({ onSelect }: { onSelect: (id: string) => void 
           })}
         </div>
         )
-      )}
+      })()}
       {showCreateModal && (
         <CreateSupplierModal
           onClose={() => setShowCreateModal(false)}
