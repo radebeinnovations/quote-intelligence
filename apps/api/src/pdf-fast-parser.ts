@@ -24,12 +24,12 @@ export function parsePdfQuoteBufferFast(contents: Uint8Array): ExtractedDocument
 
     if (textFragments.length < 3) {
       // Try fallback regex for array TJ streams: [(...)] TJ
-      const arrayTjRegex = /\[\s*(?:\(([^()\\]*(?:\\.[^()\\]*)*)\)|[^\s\]]+)*\s*\]\s*TJ/g;
+      const arrayTjRegex = /\[([^\]]*?)\]\s*TJ/g;
       let arrayMatch: RegExpExecArray | null;
       while ((arrayMatch = arrayTjRegex.exec(rawText)) !== null) {
         const itemRegex = /\(([^()\\]*(?:\\.[^()\\]*)*)\)/g;
         let item: RegExpExecArray | null;
-        while ((item = itemRegex.exec(arrayMatch[0])) !== null) {
+        while ((item = itemRegex.exec(arrayMatch[1])) !== null) {
           const unescaped = item[1]
             .replace(/\\\(/g, "(")
             .replace(/\\\)/g, ")")

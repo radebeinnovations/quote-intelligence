@@ -292,6 +292,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     const services = await servicesFor(request, reply);
     if (!services) return;
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const input = catalogDetailQuerySchema.parse(request.query);
     const detail = await services.catalog.detail(id, input);
     if (!detail) {
       return reply.status(404).send({ error: "Not Found", message: "Catalog item not found." });
